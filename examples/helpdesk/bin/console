@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Attach an IEx shell to the running node in this container.
+#
+#   docker compose exec node1 bin/console
+set -euo pipefail
+
+exec iex \
+  --sname "console-$$" \
+  --cookie "${ERLANG_COOKIE:-helpdesk-demo}" \
+  --remsh "${NODE_NAME}"

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Start a named, distributed node. Group finds its peers over ordinary Erlang
+# distribution, so the nodes must be reachable by the names in CLUSTER_NODES.
+#
+# --sname, not --name: long names require a fully qualified hostname, and Docker Compose
+# gives containers bare hostnames like "node1". Short names are the right fit here.
+set -euo pipefail
+
+exec elixir \
+  --sname "${NODE_SNAME}" \
+  --cookie "${ERLANG_COOKIE:-helpdesk-demo}" \
+  -S mix run --no-halt

@@ -1,0 +1,80 @@
+# Two clustered app nodes, an MQTT broker, and a NATS server.
+#
+#   docker compose up --build
+#
+# Then, in another terminal:
+#
+#   ./bin/demo.sh
+#
+# The build context is the repository root so the example can depend on ash_async_api by
+# path — that way the demo always runs against the working tree, not a published version.
+
+name: ash-async-api-helpdesk
+
+x-app: &app
+  build:
+    context: ../..
+    dockerfile: examples/helpdesk/Dockerfile
+  command: bin/start
+  environment: &app-env
+    ERLANG_COOKIE: helpdesk-demo
+    CLUSTER_NODES: helpdesk@node1,helpdesk@node2
+  depends_on:
+    mosquitto:
+      condition: service_started
+    nats:
+      condition: service_started
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    command: mosquitto -c /mosquitto-no-auth.conf
+    ports:
+      # Exposed so you can watch the traffic from your own machine:
+      #   mosquitto_sub -h localhost -t 'helpdesk/#' -v
+      - "1883:1883"
+
+  nats:
+    image: nats:2-alpine
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"
+
+  node1:
+    <<: *app
+    hostname: node1
+    environment:
+      <<: *app-env
+      NODE_SNAME: helpdesk
+      NODE_NAME: helpdesk@node1
+      # Each connection needs its own MQTT client id, or the broker disconnects the first.
+      MQTT_CLIENT_ID: helpdesk-node1
+      PORT: "4000"
+    ports:
+      - "4000:4000"
+
+  node2:
+    <<: *app
+    hostname: node2
+    environment:
+      <<: *app-env
+      NODE_SNAME: helpdesk
+      NODE_NAME: helpdesk@node2
+      MQTT_CLIENT_ID: helpdesk-node2
+      PORT: "4000"
+    ports:
+      - "4001:4000"
+
+  # Broker CLIs, for poking the system by hand. They idle until you exec into them:
+  #
+  #   docker compose exec mqtt-cli mosquitto_sub -h mosquitto -t 'helpdesk/#' -v
+  #   docker compose exec nats-cli nats --server nats://nats:4222 pub ...
+  mqtt-cli:
+    image: eclipse-mosquitto:2
+    entrypoint: ["sh", "-c", "sleep infinity"]
+    depends_on: [mosquitto]
+
+  nats-cli:
+    image: natsio/nats-box:latest
+    entrypoint: ["sh", "-c", "sleep infinity"]
+    depends_on: [nats]

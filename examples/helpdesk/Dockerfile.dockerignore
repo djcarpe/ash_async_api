@@ -1,0 +1,18 @@
+# BuildKit reads `<dockerfile>.dockerignore` in preference to `<context>/.dockerignore`,
+# which keeps this scoped to the example instead of adding a .dockerignore to the library
+# repository root.
+#
+# The build context is the repository root, so without this Docker would ship the whole
+# _build and deps trees to the daemon on every build.
+
+_build
+deps
+doc
+cover
+.git
+.elixir_ls
+.elixir-tools
+erl_crash.dump
+*.ez
+examples/*/_build
+examples/*/deps
