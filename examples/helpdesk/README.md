@@ -20,15 +20,16 @@ demo always runs against the working tree rather than a published version.
 | - | ----- | ------------------ |
 | 1 | Publishing needs no publishing code | `Ash.create!` on node1 puts a message on MQTT |
 | 2 | **Fan-out is cluster-wide and provider-independent** | node2's audit log prints an event for a ticket that exists only in node1's store |
-| 3 | Addresses are templated, so consumers can watch one entity | `Helpdesk.Demo.watch(ticket_id)` |
+| 3 | Addresses are structured, so consumers can watch one entity or one tenant | `Helpdesk.Demo.watch(ticket_id)` |
 | 4 | An inbound message runs an Ash action | a NATS publish creates a ticket |
 | 5 | A queue group gives exactly-once handling across nodes | only one of the two nodes creates the ticket |
 | 6 | `filter` suppresses messages that should not be sent | escalating twice publishes once |
 | 7 | `hide_fields` blocks both directions | `internal_notes` is never published, and a message cannot set it |
 | 8 | The document cannot drift from the code | `curl localhost:4000/asyncapi.json` |
 | 9 | A subscriber can watch one entity, from any node | node2 subscribes to one ticket, node1 publishes to it |
+| 10 | **One segment list, two delimiters** | the MQTT channel joins with `/`, the NATS one with `.` — neither is written in the DSL |
 
-`./bin/demo.sh` checks all nine and prints ✓/✗ for each, so it doubles as an integration
+`./bin/demo.sh` checks all ten and prints ✓/✗ for each, so it doubles as an integration
 test. Every claim above was verified on a clean `docker compose build && up`.
 
 ### The one that matters: claim 2
@@ -65,18 +66,26 @@ subscriber received a message or just read the row.
 Two brokers, split by direction, to make the point that nothing above
 `AshAsyncApi.Transport` knows or cares which broker a channel uses:
 
-- **MQTT** carries outbound ticket events, one topic per ticket
-  (`helpdesk/tickets/{ticket_id}/events`).
-- **NATS** carries inbound commands (`helpdesk.tickets.commands`) under the queue group
-  `helpdesk`, so exactly one node handles each command.
+- **MQTT** carries outbound ticket events, one topic per ticket.
+- **NATS** carries inbound commands under the queue group `helpdesk`, so exactly one node
+  handles each command.
 - **`Group`** carries in-cluster fan-out to `Helpdesk.AuditLog` on every node.
 
 The same `AshAsyncApi.subscribe/2` call in `Helpdesk.AuditLog` sees both — events that
 arrived over MQTT and commands that arrived over NATS.
 
-Note the separators: the MQTT channel uses `/` and the NATS channel uses `.`.
-`AshAsyncApi.Address` detects each from the template, so the MQTT subscription filter uses
-`+` and the NATS one uses `*` without either being configured.
+Look at the two channel declarations in `lib/helpdesk/support/ticket.ex`: they are written
+identically, as segment lists, with no delimiter anywhere.
+
+```elixir
+channel :ticket_events,   ["helpdesk", :organization_id, "tickets", :id, "events"]  # servers [:mqtt]
+channel :ticket_commands, ["helpdesk", "tickets", "commands"]                        # servers [:nats]
+```
+
+At runtime they become `helpdesk/acme/tickets/<id>/events` and `helpdesk.tickets.commands`,
+and they subscribe with `+` and `*` respectively — all of it decided by each server's
+`protocol`. Step 10 of the demo prints both. Move a channel between the two servers and the
+address, the filter and the generated document all follow.
 
 ## Poking at it by hand
 
@@ -84,8 +93,8 @@ Note the separators: the MQTT channel uses `/` and the NATS channel uses `.`.
 # Watch everything leaving the app
 docker compose exec mqtt-cli mosquitto_sub -h mosquitto -t 'helpdesk/#' -v
 
-# Watch one ticket only
-docker compose exec mqtt-cli mosquitto_sub -h mosquitto -t 'helpdesk/tickets/+/events' -v
+# Watch one organization only — organization_id is a segment, so it is routable
+docker compose exec mqtt-cli mosquitto_sub -h mosquitto -t 'helpdesk/acme/#' -v
 
 # Open a ticket on node1
 docker compose exec node1 bin/rpc 'Helpdesk.Demo.open("Printer on fire")'
@@ -123,7 +132,7 @@ AshAsyncApi.PubSub.nodes(Helpdesk.AsyncApiRouter)
 
 # Publish something that is not tied to an action
 AshAsyncApi.publish_to(Helpdesk.AsyncApiRouter, :ticket_events, %{note: "hand-rolled"},
-  params: %{ticket_id: ticket.id}
+  params: %{organization_id: ticket.organization_id, id: ticket.id}
 )
 ```
 

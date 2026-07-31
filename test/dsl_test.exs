@@ -33,8 +33,8 @@ defmodule AshAsyncApi.DslTest do
       assert [events, commands] = ResourceInfo.channels(Ticket)
 
       assert events.name == :ticket_events
-      assert events.address == "helpdesk/tickets/{ticket_id}/events"
-      assert [%{name: :ticket_id, source: :id}] = events.parameters
+      assert events.segments == ["helpdesk", :organization_id, "tickets", :id, "events"]
+      assert [%{name: :id, description: "The id of the ticket"}] = events.parameters
 
       assert commands.name == :ticket_commands
       assert commands.parameters == []
@@ -178,8 +178,8 @@ defmodule AshAsyncApi.DslTest do
   end
 
   describe "verifiers" do
-    test "rejects a channel parameter that is not in the address" do
-      assert_dsl_error ~r/do not appear in its address/ do
+    test "rejects a documented parameter the address does not contain" do
+      assert_dsl_error ~r/its address does not contain/ do
         defmodule BadParameter do
           use Ash.Resource,
             domain: nil,
@@ -192,7 +192,7 @@ defmodule AshAsyncApi.DslTest do
 
           async_api do
             channels do
-              channel :events, "tickets/events" do
+              channel :events, ["tickets", "events"] do
                 parameter :ticket_id
               end
             end
@@ -215,7 +215,7 @@ defmodule AshAsyncApi.DslTest do
 
           async_api do
             channels do
-              channel :events, "tickets/events"
+              channel :events, ["tickets", "events"]
             end
 
             operations do
@@ -244,7 +244,7 @@ defmodule AshAsyncApi.DslTest do
 
           async_api do
             channels do
-              channel :events, "tickets/events"
+              channel :events, ["tickets", "events"]
             end
 
             operations do
@@ -273,7 +273,7 @@ defmodule AshAsyncApi.DslTest do
 
           async_api do
             channels do
-              channel :events, "tickets/events"
+              channel :events, ["tickets", "events"]
             end
 
             operations do
@@ -306,7 +306,7 @@ defmodule AshAsyncApi.DslTest do
 
           async_api do
             channels do
-              channel :events, "tickets/events"
+              channel :events, ["tickets", "events"]
             end
 
             operations do
@@ -419,7 +419,7 @@ defmodule AshAsyncApi.DslTest do
           publish_on_notification? false
 
           channels do
-            channel :events, "tickets/events"
+            channel :events, ["tickets", "events"]
           end
 
           operations do

@@ -179,8 +179,12 @@ defmodule AshAsyncApi.Publisher do
     if filtered_out?(operation, record, opts) do
       {:ok, :filtered}
     else
+      # Resolved once: a relationship-backed parameter can cost a query, and the envelope
+      # needs the same values twice.
+      params = address_params(channel, record, domain: operation.domain)
+
       with {:ok, payload} <- AshAsyncApi.Payload.for_send(operation, record),
-           {:ok, address} <- address_for(channel, address_params(channel, record)) do
+           {:ok, address} <- address_for(channel, params) do
         envelope =
           Envelope.new(
             channel: channel.key,
@@ -192,7 +196,7 @@ defmodule AshAsyncApi.Publisher do
             content_type: operation.content_type,
             resource: operation.resource,
             action: operation.action,
-            params: address_params(channel, record),
+            params: params,
             reply_to: reply_address(table, operation, record),
             router: router
           )
@@ -222,10 +226,10 @@ defmodule AshAsyncApi.Publisher do
 
   defp reply_address(_table, %{reply_channel_key: nil}, _record), do: nil
 
-  defp reply_address(table, %{reply_channel_key: key}, record) do
+  defp reply_address(table, %{reply_channel_key: key, domain: domain}, record) do
     channel = Table.channel(table, key)
 
-    case address_for(channel, address_params(channel, record)) do
+    case address_for(channel, address_params(channel, record, domain: domain)) do
       {:ok, address} -> address
       _ -> nil
     end
@@ -234,28 +238,116 @@ defmodule AshAsyncApi.Publisher do
   @doc """
   The address parameter values a channel needs, read off a record.
 
-  Every `{parameter}` in the address needs a value. Unless the channel's `parameter`
-  block says otherwise, it comes from the field of the same name on the record.
+  Each parameter carries the source path it was written with: `:id` reads the field, and
+  `[:organization, :id]` walks the relationship. A `parameter` block's `source` overrides
+  the path, and may be a function of the record.
   """
-  @spec address_params(AshAsyncApi.Router.Table.ResolvedChannel.t(), term()) :: map()
-  def address_params(%{compiled: nil}, _record), do: %{}
+  @spec address_params(AshAsyncApi.Router.Table.ResolvedChannel.t(), term(), keyword()) :: map()
+  def address_params(channel, record, opts \\ [])
 
-  def address_params(channel, record) do
+  def address_params(%{compiled: nil}, _record, _opts), do: %{}
+
+  def address_params(channel, record, opts) do
+    paths = channel.compiled.param_paths
+
     Map.new(channel.compiled.params, fn name ->
       parameter = AshAsyncApi.Router.Table.ResolvedChannel.parameter(channel, name)
-      {name, param_value(parameter, name, record)}
+      path = Map.get(paths, name) || [name]
+
+      {name, param_value(parameter, path, record, opts)}
     end)
   end
 
-  defp param_value(nil, name, record), do: read_field(record, name)
+  defp param_value(nil, path, record, opts), do: walk(record, path, opts)
 
-  defp param_value(parameter, name, record) do
-    case AshAsyncApi.Channel.Parameter.source(parameter) do
-      source when is_function(source, 1) -> source.(record)
-      source when is_atom(source) -> read_field(record, source) || parameter.default
-      _ -> read_field(record, name) || parameter.default
+  defp param_value(parameter, path, record, opts) do
+    # A `parameter` block usually only documents; it overrides where the value comes from
+    # only when it declares a `source`. Falling back to the parameter's *name* here would
+    # silently break `[:organization, :id]`, whose value is not on the record at all.
+    value =
+      case AshAsyncApi.Channel.Parameter.source(parameter) do
+        nil -> walk(record, path, opts)
+        source when is_function(source, 1) -> source.(record)
+        source when is_list(source) -> walk(record, source, opts)
+        source when is_atom(source) -> walk(record, [source], opts)
+      end
+
+    value || parameter.default
+  end
+
+  @doc false
+  # Walk a source path to a value. `[:id]` is a plain field read; anything longer traverses
+  # relationships.
+  def walk(record, [field], _opts), do: read_field(record, field)
+
+  def walk(record, [relationship | rest], opts) when is_map(record) do
+    case fast_path(record, relationship, rest) do
+      {:ok, value} -> value
+      :error -> record |> load_related(relationship, rest, opts) |> walk(rest, opts)
     end
   end
+
+  def walk(_record, _path, _opts), do: nil
+
+  # A `belongs_to` already stores the key on the record, so `[:organization, :id]` needs no
+  # load at all — which matters, because this runs in a notifier after every write.
+  defp fast_path(%resource{} = record, relationship, [field]) do
+    with true <- function_exported?(resource, :spark_dsl_config, 0),
+         %Ash.Resource.Relationships.BelongsTo{} = rel <-
+           Ash.Resource.Info.relationship(resource, relationship),
+         true <- rel.destination_attribute == field do
+      {:ok, read_field(record, rel.source_attribute)}
+    else
+      _ -> :error
+    end
+  end
+
+  defp fast_path(_record, _relationship, _rest), do: :error
+
+  defp load_related(record, relationship, rest, opts) do
+    case Map.get(record, relationship) do
+      %Ash.NotLoaded{} -> do_load(record, relationship, rest, opts)
+      %Ash.ForbiddenField{} -> nil
+      related -> related
+    end
+  end
+
+  # Loading here is a query in the publishing path, so it is the fallback rather than the
+  # rule — `fast_path/3` covers the common `belongs_to` case without touching the database.
+  # `authorize?: false` because the decision to publish was already made; this is the system
+  # reading its own record to address the message, not the actor reading data.
+  defp do_load(%resource{} = record, relationship, rest, opts) do
+    load = nested_load(relationship, rest)
+
+    case Ash.load(record, load, domain: opts[:domain], authorize?: false) do
+      {:ok, loaded} -> Map.get(loaded, relationship)
+      {:error, reason} -> warn_unloadable(resource, relationship, reason)
+    end
+  rescue
+    # Publishing runs in a notifier, after the caller's write has already committed. A
+    # relationship that cannot be loaded — a nil foreign key, a resource Ash refuses to
+    # query — must degrade to an unfillable address, never take down the action that
+    # triggered it. `Ash.load` raises for some of these rather than returning an error.
+    error -> warn_unloadable(resource, relationship, error)
+  end
+
+  defp warn_unloadable(resource, relationship, reason) do
+    Logger.warning("""
+    AshAsyncApi could not load #{inspect(relationship)} on #{inspect(resource)} to build a \
+    channel address: #{format_error(reason)}
+
+    Preload it before publishing, or address the channel with a field that is already \
+    present — a belongs_to's own key, for instance.
+    """)
+
+    nil
+  end
+
+  defp format_error(%{__exception__: true} = error), do: Exception.message(error)
+  defp format_error(reason), do: inspect(reason)
+
+  defp nested_load(relationship, [_field]), do: [relationship]
+  defp nested_load(relationship, [next | rest]), do: [{relationship, nested_load(next, rest)}]
 
   defp read_field(record, name) when is_map(record) do
     case Map.get(record, name) do
@@ -279,7 +371,8 @@ defmodule AshAsyncApi.Publisher do
          AshAsyncApi.Error.MissingAddressParams.exception(
            address: channel.address,
            missing: missing,
-           channel: channel.name
+           channel: channel.name,
+           paths: channel.compiled.param_paths
          )}
     end
   end

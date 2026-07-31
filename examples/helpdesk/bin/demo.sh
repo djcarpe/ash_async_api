@@ -170,7 +170,7 @@ watched=$($DC exec -T node2 bin/rpc '
   parent = self()
 
   spawn_link(fn ->
-    AshAsyncApi.subscribe(Helpdesk.AsyncApiRouter, "helpdesk/tickets/#{t.id}/events")
+    AshAsyncApi.subscribe(Helpdesk.AsyncApiRouter, "helpdesk/#{t.organization_id}/tickets/#{t.id}/events")
     send(parent, :ready)
 
     receive do
@@ -185,7 +185,7 @@ watched=$($DC exec -T node2 bin/rpc '
 
   :rpc.call(:helpdesk@node1, AshAsyncApi, :publish_to, [
     Helpdesk.AsyncApiRouter, :ticket_events, %{note: "hand-rolled"},
-    [params: %{ticket_id: t.id}, message: "adHoc"]
+    [params: %{organization_id: t.organization_id, id: t.id}, message: "adHoc"]
   ])
 
   receive do msg -> msg after 9000 -> :no_message end
@@ -197,6 +197,28 @@ if [[ "$watched" == *"hand-rolled"* ]]; then
   ok "an address-scoped subscriber on node2 received a message published on node1"
 else
   bad "the per-ticket subscription did not receive the message"
+fi
+
+# ──────────────────────────────────────────────────────────────────────────────────────
+bold "10. One segment list, two buses"
+dim   "   Both channels are written the same way. The delimiter comes from the protocol."
+
+$DC exec -T node1 bin/rpc '
+  table = Helpdesk.AsyncApiRouter.__ash_async_api__()
+
+  for key <- [:ticket_events, :ticket_commands] do
+    c = AshAsyncApi.Router.Table.channel(table, key)
+    {key, c.channel.segments, c.delimiter, c.address}
+  end
+' | sed "s/^/  /"
+
+events_addr=$($DC exec -T node1 bin/rpc 'AshAsyncApi.Router.Table.channel(Helpdesk.AsyncApiRouter.__ash_async_api__(), :ticket_events).address')
+commands_addr=$($DC exec -T node1 bin/rpc 'AshAsyncApi.Router.Table.channel(Helpdesk.AsyncApiRouter.__ash_async_api__(), :ticket_commands).address')
+
+if [[ "$events_addr" == *"helpdesk/"* && "$commands_addr" == *"helpdesk.tickets.commands"* ]]; then
+  ok "MQTT joined with / and NATS joined with . — neither was written in the DSL"
+else
+  bad "expected / on MQTT and . on NATS, got $events_addr and $commands_addr"
 fi
 
 bold "Everything above ran against the working tree."

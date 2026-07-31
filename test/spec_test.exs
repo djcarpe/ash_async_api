@@ -94,21 +94,32 @@ defmodule AshAsyncApi.SpecTest do
 
     test "carries the templated address verbatim", %{spec: spec} do
       assert spec["channels"]["ticket_events"]["address"] ==
-               "helpdesk/tickets/{ticket_id}/events"
+               "helpdesk/{organization_id}/tickets/{id}/events"
     end
 
     test "every address parameter is described", %{spec: spec} do
       assert spec["channels"]["ticket_events"]["parameters"] == %{
-               "ticket_id" => %{"description" => "The id of the ticket"}
+               "organization_id" => %{},
+               "id" => %{"description" => "The id of the ticket"}
              }
     end
 
-    test "an undeclared parameter still appears, as the spec requires", %{spec: spec} do
+    test "an undocumented parameter still appears, as the spec requires", %{spec: spec} do
+      # `:id` is documented nowhere, but every address parameter must be in the document.
       assert spec["channels"]["comment_events"]["parameters"] == %{
+               "ticket_organization_id" => %{
+                 "description" => "The organization the comment's ticket belongs to"
+               },
                "ticket_id" => %{
                  "description" => "The id of the ticket the comment belongs to"
-               }
+               },
+               "id" => %{}
              }
+    end
+
+    test "relationship paths render as ordinary braced parameters", %{spec: spec} do
+      assert spec["channels"]["comment_events"]["address"] ==
+               "helpdesk/{ticket_organization_id}/tickets/{ticket_id}/comments/{id}"
     end
 
     test "a channel with no parameters has none", %{spec: spec} do

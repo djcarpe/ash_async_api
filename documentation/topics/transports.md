@@ -8,29 +8,67 @@ is identical for every provider.
 The client libraries are **not** dependencies of AshAsyncApi. Add the one you need, so you
 are not compiling a Kafka client to talk to MQTT.
 
-## Address translation
+## Delimiters
 
-Brokers disagree about how you subscribe to a family of addresses. A transport declares its
-syntax via `c:AshAsyncApi.Transport.wildcard_style/0`, and
+A channel address is a list of segments. What joins them is decided by the bus, not by your
+DSL, so one declaration works everywhere:
+
+```elixir
+channel :ticket_events, ["helpdesk", "tickets", :id, "events"]
+```
+
+| Protocol | Delimiter | Address becomes |
+| -------- | --------- | --------------- |
+| MQTT, WS, HTTP | `/` | `helpdesk/tickets/<id>/events` |
+| NATS, Kafka, AMQP, JMS, Pulsar, SNS, SQS, Pub/Sub | `.` | `helpdesk.tickets.<id>.events` |
+| Redis | `:` | `helpdesk:tickets:<id>:events` |
+| anything else | `/` | |
+
+Resolution order, most specific first:
+
+1. the channel's own `delimiter`
+2. the domain's `default_delimiter`
+3. the transport's `c:AshAsyncApi.Transport.default_delimiter/0`, if it defines one
+4. the convention for the server's `protocol`
+5. `/`
+
+You should rarely need 1 or 2. They exist for brokers configured against convention, and to
+settle the one case AshAsyncApi cannot decide for you: a channel on two servers whose
+conventions disagree. That raises `AshAsyncApi.Error.DelimiterConflict` when the router
+builds its table, because a channel has exactly one address and guessing would be worse
+than failing.
+
+```elixir
+# A channel deliberately spanning MQTT and NATS
+channel :audit, ["helpdesk", "audit"] do
+  servers [:mqtt, :nats]
+  delimiter "."
+end
+```
+
+## Wildcard translation
+
+Brokers also disagree about how you subscribe to a *family* of addresses. A transport
+declares its syntax via `c:AshAsyncApi.Transport.wildcard_style/0`, and
 `AshAsyncApi.Address.to_filter/2` does the translating.
 
-Given `channel :ticket_events, "helpdesk/tickets/{ticket_id}/events"`:
+Given `["helpdesk", "tickets", :id, "events"]`:
 
 | Transport | `wildcard_style/0` | Subscription filter |
 | --------- | ------------------ | ------------------- |
 | MQTT | `{:single, "+"}` | `helpdesk/tickets/+/events` |
-| NATS | `{:single, "*"}` | `helpdesk/tickets/*/events` |
-| Kafka | `:exact` | `helpdesk/tickets` (topic), parameters become the key |
+| NATS | `{:single, "*"}` | `helpdesk.tickets.*.events` |
+| Kafka | `:exact` | `helpdesk.tickets` (topic), parameters become the key |
 
-Parameters are extracted back out of the concrete address on the way in, so
-`{ticket_id}` is available as action input and on the envelope, whatever the broker.
+Parameters are extracted back out of the concrete address on the way in, so `:id` is
+available as action input and on the envelope, whatever the broker.
 
 ## MQTT
 
 `AshAsyncApi.Transport.Mqtt`, built on [`emqtt`](https://hex.pm/packages/emqtt).
 
 MQTT is the closest fit. Its topic model is `/`-separated levels with a `+` single-level
-wildcard, which is exactly what an address parameter means.
+wildcard, which is exactly what an address segment and parameter mean.
 
 ```elixir
 {:emqtt, "~> 1.13"}
@@ -61,7 +99,7 @@ Per-message overrides go in channel or operation `bindings`, following the
 rendered into the generated document too:
 
 ```elixir
-channel :ticket_snapshots, "helpdesk/tickets/{ticket_id}" do
+channel :ticket_snapshots, ["helpdesk", "tickets", :id] do
   bindings %{mqtt: %{qos: 1, retain: true}}
 end
 ```
@@ -80,12 +118,13 @@ would take the router with it. Publishing while disconnected returns
 
 `AshAsyncApi.Transport.Nats`, built on [`gnat`](https://hex.pm/packages/gnat).
 
-NATS subjects are `.`-separated with a `*` single-token wildcard.
-`AshAsyncApi.Address` detects the separator from your template, so write addresses
-NATS-style:
+NATS subjects are `.`-separated with a `*` single-token wildcard, and a server with
+`protocol :nats` gets `.` automatically — so the channel is written exactly as it would be
+for MQTT:
 
 ```elixir
-channel :ticket_events, "helpdesk.tickets.{ticket_id}.events"
+channel :ticket_events, ["helpdesk", "tickets", :id, "events"]
+# → helpdesk.tickets.<id>.events
 ```
 
 ```elixir
@@ -114,12 +153,12 @@ because it works fine on one node.
 
 `AshAsyncApi.Transport.Kafka`, built on [`brod`](https://hex.pm/packages/brod).
 
-Kafka is the odd one out. It has no wildcards and no topic hierarchy, so a templated
+Kafka is the odd one out. It has no wildcards and no topic hierarchy, so a parameterised
 address cannot be a topic. Instead the literal prefix becomes the topic and the parameters
 become the **message key**:
 
 ```elixir
-channel :ticket_events, "helpdesk.tickets.{ticket_id}"
+channel :ticket_events, ["helpdesk", "tickets", :id]
 #  topic: "helpdesk.tickets"
 #  key:   the ticket id
 ```
@@ -207,6 +246,11 @@ defmodule MyApp.Transport.Redis do
   @impl true
   def wildcard_style, do: {:single, "*"}
 
+  # Only needed when the protocol registry does not already know; `protocol :redis`
+  # would give you ":" for free.
+  @impl true
+  def default_delimiter, do: ":"
+
   @impl true
   def child_spec(context) do
     %{
@@ -253,6 +297,8 @@ worth using for anything required.
   at compile time beats finding out when the supervisor fails to start.
 - `delivery_scope/0` — return `:local` when every node consumes from the broker
   independently, so `AshAsyncApi.PubSub` does not multiply the message.
+- `default_delimiter/0` — only when your bus joins address segments differently from what
+  its protocol implies. See [Delimiters](#delimiters).
 - `encode/2` / `decode/2` — override for a non-JSON wire format (Avro, Protobuf, MessagePack).
 
 ### Supervising transports yourself

@@ -16,16 +16,15 @@ defmodule AshAsyncApi.Test.Helpdesk.Ticket do
     hide_fields [:internal_notes]
 
     channels do
-      channel :ticket_events, "helpdesk/tickets/{ticket_id}/events" do
+      channel :ticket_events, ["helpdesk", :organization_id, "tickets", :id, "events"] do
         description "Lifecycle events for a single ticket"
 
-        parameter :ticket_id do
-          source :id
+        parameter :id do
           description "The id of the ticket"
         end
       end
 
-      channel :ticket_commands, "helpdesk/tickets/commands" do
+      channel :ticket_commands, ["helpdesk", "tickets", "commands"] do
         description "Commands other services send to the helpdesk"
       end
     end
@@ -57,6 +56,12 @@ defmodule AshAsyncApi.Test.Helpdesk.Ticket do
 
   attributes do
     uuid_primary_key :id
+
+    attribute :organization_id, :string do
+      allow_nil? false
+      public? true
+      default "acme"
+    end
 
     attribute :subject, :string do
       allow_nil? false

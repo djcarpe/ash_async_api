@@ -26,12 +26,13 @@ defmodule Helpdesk.Support.Ticket do
     type "ticket"
 
     channels do
-      channel :ticket_events, "helpdesk/tickets/{ticket_id}/events" do
+      # Addresses are segment lists. The delimiter comes from the bus, so this is
+      # helpdesk/tickets/<id>/events on MQTT and helpdesk.tickets.<id>.events on NATS.
+      channel :ticket_events, ["helpdesk", "tickets", :id, "events"] do
         description "Lifecycle events for a single ticket"
-        parameter :ticket_id, source: :id
       end
 
-      channel :ticket_commands, "helpdesk/tickets/commands"
+      channel :ticket_commands, ["helpdesk", "tickets", "commands"]
     end
 
     operations do
@@ -96,9 +97,36 @@ end
 
 # publish by hand when you need to
 AshAsyncApi.publish_to(Helpdesk.AsyncApiRouter, :ticket_events, %{status: "escalated"},
-  params: %{ticket_id: ticket.id}
+  params: %{id: ticket.id}
 )
 ```
+
+## Addresses
+
+A channel address is a list of segments. You never write the delimiter, because it belongs
+to the broker rather than to your API:
+
+```elixir
+channel :ticket_events, ["helpdesk", "tickets", :id, "events"]
+
+# helpdesk/tickets/<id>/events   on MQTT   (and subscribes with helpdesk/tickets/+/events)
+# helpdesk.tickets.<id>.events   on NATS   (and subscribes with helpdesk.tickets.*.events)
+# helpdesk:tickets:<id>:events   on Redis
+```
+
+Segments interleave literals, fields and relationship paths, so an address can carry as much
+of a record's identity as you want to route on:
+
+```elixir
+channel :comment_events,
+        ["helpdesk", [:ticket, :organization_id], "tickets", [:ticket, :id], "comments", :id]
+
+# helpdesk/acme/tickets/9f2.../comments/41b...
+```
+
+`[:ticket, :organization_id]` walks the relationship — reading the foreign key directly when
+it is already on the record, and loading only when it is not. Paths are checked at compile
+time, so a misspelled relationship fails the build rather than the publish.
 
 ## How the pieces fit
 
@@ -139,9 +167,9 @@ observers, so **all** of them see it.
 | Transport | Library | Wildcards | Notes |
 | --------- | ------- | --------- | ----- |
 | `AshAsyncApi.Transport.Local` | none | `+` | In-cluster only. Starts no processes. |
-| `AshAsyncApi.Transport.Mqtt` | [`emqtt`](https://hex.pm/packages/emqtt) | `+` | Topic levels map onto address parameters exactly. |
-| `AshAsyncApi.Transport.Nats` | [`gnat`](https://hex.pm/packages/gnat) | `*` | Use a `:queue_group` so one node handles each message. |
-| `AshAsyncApi.Transport.Kafka` | [`brod`](https://hex.pm/packages/brod) | none | Address prefix becomes the topic, parameters become the message key. |
+| `AshAsyncApi.Transport.Mqtt` | [`emqtt`](https://hex.pm/packages/emqtt) | `+` | Segments join with `/`; levels map onto parameters exactly. |
+| `AshAsyncApi.Transport.Nats` | [`gnat`](https://hex.pm/packages/gnat) | `*` | Segments join with `.`. Use a `:queue_group` so one node handles each message. |
+| `AshAsyncApi.Transport.Kafka` | [`brod`](https://hex.pm/packages/brod) | none | Segments join with `.`; the literal prefix is the topic and parameters are the message key. |
 
 The client libraries are **not** dependencies of AshAsyncApi — add the one you need. See
 [Transports](documentation/topics/transports.md) for the details, including how to write
@@ -149,7 +177,7 @@ your own.
 
 ## Runnable example
 
-[`examples/helpdesk`](examples/helpdesk) is a Docker Compose stack with **two clustered
+[`examples/helpdesk`](examples/helpdesk/README.md) is a Docker Compose stack with **two clustered
 nodes**, **Mosquitto** and **NATS**:
 
 ```sh
@@ -158,9 +186,10 @@ docker compose up --build
 ./bin/demo.sh
 ```
 
-`bin/demo.sh` checks nine behaviours and prints ✓/✗ for each — auto-publishing, cross-node
+`bin/demo.sh` checks ten behaviours and prints ✓/✗ for each — auto-publishing, cross-node
 fan-out, inbound dispatch, NATS queue-group deduplication, `filter`, `hide_fields`,
-per-entity subscriptions, and spec generation.
+per-entity subscriptions, spec generation, and one segment list coming out `/`-joined on
+MQTT and `.`-joined on NATS.
 
 Storage is per-node ETS on purpose: when node2 logs an event for a ticket that exists only in
 node1's table, the message can only have arrived via `Group`.

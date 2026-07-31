@@ -118,13 +118,23 @@ defmodule AshAsyncApi.Transport do
   """
   @callback delivery_scope() :: :cluster | :local
 
+  @doc """
+  The delimiter this bus joins address segments with.
+
+  Only define this when the transport knows better than the protocol registry — the default
+  comes from the server's `protocol`, via `AshAsyncApi.Server.default_delimiter_for/1`, which
+  already covers MQTT (`/`), NATS/Kafka/AMQP (`.`) and Redis (`:`).
+  """
+  @callback default_delimiter() :: String.t()
+
   @optional_callbacks [
     unsubscribe: 2,
     encode: 2,
     decode: 2,
     validate_opts: 2,
     delivery_scope: 0,
-    wildcard_style: 0
+    wildcard_style: 0,
+    default_delimiter: 0
   ]
 
   @doc """

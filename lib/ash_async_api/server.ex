@@ -31,6 +31,7 @@ defmodule AshAsyncApi.Server do
     :description,
     :external_docs,
     :transport,
+    :delimiter,
     :__spark_metadata__,
     :__identifier__,
     transport_opts: [],
@@ -51,6 +52,7 @@ defmodule AshAsyncApi.Server do
           description: String.t() | nil,
           external_docs: String.t() | nil,
           transport: module() | nil,
+          delimiter: String.t() | nil,
           transport_opts: keyword(),
           variables: map(),
           security: list(),
@@ -110,6 +112,14 @@ defmodule AshAsyncApi.Server do
     pathname: [
       type: :string,
       doc: "The path to a resource in the host, e.g `/v2`."
+    ],
+    delimiter: [
+      type: :string,
+      doc: """
+      What joins the segments of a channel address on this bus. Defaults to the convention
+      for the server's `protocol` — `/` for MQTT, `.` for NATS, Kafka and AMQP, `:` for
+      Redis. Set this only when your broker is configured against convention.
+      """
     ],
     transport: [
       type: {:behaviour, AshAsyncApi.Transport},
@@ -190,6 +200,102 @@ defmodule AshAsyncApi.Server do
       identifier: :name
     }
   end
+
+  # Every bus has a convention for how address segments are joined, and it is a property of
+  # the protocol rather than of your API — which is why `AshAsyncApi.Address` takes a segment
+  # list and lets the server supply the delimiter.
+  @protocol_delimiters %{
+    # Hierarchical topic paths.
+    mqtt: "/",
+    mqtts: "/",
+    ws: "/",
+    wss: "/",
+    http: "/",
+    https: "/",
+    mercure: "/",
+    # Dotted subjects and routing keys.
+    nats: ".",
+    kafka: ".",
+    "kafka-secure": ".",
+    amqp: ".",
+    amqp1: ".",
+    stomp: ".",
+    jms: ".",
+    pulsar: ".",
+    googlepubsub: ".",
+    solace: ".",
+    ibmmq: ".",
+    anypointmq: ".",
+    sns: ".",
+    sqs: ".",
+    # Redis convention.
+    redis: ":",
+    # In-cluster delivery has no broker convention; `/` reads best.
+    erlang: "/"
+  }
+
+  @default_delimiter "/"
+
+  @doc """
+  The delimiter that joins address segments on this server.
+
+  Resolution order: the server's explicit `delimiter`, then the transport's
+  `c:AshAsyncApi.Transport.default_delimiter/0` if it defines one, then the convention for
+  the protocol, then `"/"`.
+
+  ## Examples
+
+      iex> AshAsyncApi.Server.delimiter(%AshAsyncApi.Server{protocol: :nats})
+      "."
+
+      iex> AshAsyncApi.Server.delimiter(%AshAsyncApi.Server{protocol: :mqtt})
+      "/"
+
+      iex> AshAsyncApi.Server.delimiter(%AshAsyncApi.Server{protocol: :nats, delimiter: "/"})
+      "/"
+  """
+  @spec delimiter(t()) :: String.t()
+  def delimiter(%__MODULE__{delimiter: delimiter}) when is_binary(delimiter), do: delimiter
+
+  def delimiter(%__MODULE__{transport: transport, protocol: protocol}) do
+    transport_delimiter(transport) || default_delimiter_for(protocol)
+  end
+
+  defp transport_delimiter(nil), do: nil
+
+  defp transport_delimiter(transport) do
+    if Code.ensure_loaded?(transport) and function_exported?(transport, :default_delimiter, 0) do
+      transport.default_delimiter()
+    end
+  end
+
+  @doc """
+  The conventional delimiter for a protocol.
+
+  ## Examples
+
+      iex> AshAsyncApi.Server.default_delimiter_for(:kafka)
+      "."
+
+      iex> AshAsyncApi.Server.default_delimiter_for(:redis)
+      ":"
+
+      iex> AshAsyncApi.Server.default_delimiter_for(:something_unknown)
+      "/"
+  """
+  @spec default_delimiter_for(atom() | String.t() | nil) :: String.t()
+  def default_delimiter_for(protocol) when is_binary(protocol) do
+    default_delimiter_for(String.to_existing_atom(protocol))
+  rescue
+    ArgumentError -> @default_delimiter
+  end
+
+  def default_delimiter_for(protocol) do
+    Map.get(@protocol_delimiters, protocol, @default_delimiter)
+  end
+
+  @doc false
+  def protocol_delimiters, do: @protocol_delimiters
 
   @doc """
   The full URL for a server, as `protocol://host/pathname`.

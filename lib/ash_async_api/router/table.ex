@@ -160,21 +160,64 @@ defmodule AshAsyncApi.Router.Table do
       Enum.map(channels, &{scope, &1})
     end)
     # AsyncAPI identifies a channel by its address, so declarations that agree on
-    # name *and* address are one channel, however many resources declared it.
-    |> Enum.uniq_by(fn {_scope, channel} -> {channel.name, channel.address} end)
+    # name *and* segments are one channel, however many resources declared it.
+    |> Enum.uniq_by(fn {_scope, channel} -> {channel.name, channel.segments} end)
     |> assign_keys()
     |> Enum.map(fn {key, scope, channel} ->
+      channel_servers = resolve_servers(channel, scope.domain, server_names)
+      delimiter = resolve_delimiter(channel, scope.domain, channel_servers, servers)
+
+      compiled =
+        channel.segments && AshAsyncApi.Address.compile(channel.segments, delimiter: delimiter)
+
       %ResolvedChannel{
         key: key,
         name: channel.name,
-        address: channel.address,
-        compiled: channel.address && AshAsyncApi.Address.compile(channel.address),
+        address: compiled && compiled.template,
+        compiled: compiled,
+        delimiter: delimiter,
         channel: channel,
         domain: scope.domain,
         resource: scope.resource,
-        servers: resolve_servers(channel, scope.domain, server_names)
+        servers: channel_servers
       }
     end)
+  end
+
+  # The delimiter comes from the bus, which is the whole point of declaring addresses as
+  # segment lists: the same channel is `helpdesk/tickets/1` on MQTT and `helpdesk.tickets.1`
+  # on NATS without being written twice.
+  defp resolve_delimiter(%{delimiter: delimiter}, _domain, _channel_servers, _servers)
+       when is_binary(delimiter),
+       do: delimiter
+
+  defp resolve_delimiter(channel, domain, channel_servers, servers) do
+    delimiters =
+      channel_servers
+      |> Enum.flat_map(fn name ->
+        case Map.get(servers, name) do
+          {_domain, server} -> [AshAsyncApi.Server.delimiter(server)]
+          nil -> []
+        end
+      end)
+      |> Enum.uniq()
+
+    case delimiters do
+      [delimiter] ->
+        delimiter
+
+      [] ->
+        AshAsyncApi.Domain.Info.default_delimiter(domain) || "/"
+
+      conflicting ->
+        AshAsyncApi.Domain.Info.default_delimiter(domain) ||
+          raise AshAsyncApi.Error.DelimiterConflict.exception(
+                  channel: channel.name,
+                  servers: channel_servers,
+                  delimiters: conflicting,
+                  domain: domain
+                )
+    end
   end
 
   # Channel names only need disambiguating when the same name covers more than one

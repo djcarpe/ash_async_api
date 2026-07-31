@@ -174,7 +174,7 @@ defmodule AshAsyncApi.Transport.Kafka do
         template when is_binary(template) -> AshAsyncApi.Address.compile(template)
       end
 
-    compiled.separator || "."
+    compiled.delimiter || "."
   end
 
   defp presence(""), do: nil

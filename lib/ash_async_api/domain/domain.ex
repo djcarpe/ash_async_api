@@ -227,6 +227,14 @@ defmodule AshAsyncApi.Domain do
         server when exactly one is declared.
         """
       ],
+      default_delimiter: [
+        type: :string,
+        doc: """
+        The delimiter joining address segments for channels in this domain, overriding what
+        the servers' protocols imply. Set this only to settle a conflict — normally the bus
+        decides, which is what lets one channel declaration work on MQTT and NATS alike.
+        """
+      ],
       security_schemes: [
         type: :map,
         default: %{},

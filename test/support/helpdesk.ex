@@ -25,15 +25,35 @@ defmodule AshAsyncApi.Test.Helpdesk do
     end
 
     channels do
-      channel :comment_events, "helpdesk/tickets/{ticket_id}/comments" do
+      # `[:ticket, :id]` is a belongs_to's own key, so it needs no query.
+      # `[:ticket, :organization_id]` is not, so the publisher loads the ticket.
+      channel :comment_events,
+              [
+                "helpdesk",
+                [:ticket, :organization_id],
+                "tickets",
+                [:ticket, :id],
+                "comments",
+                :id
+              ] do
         description "Comments added to a ticket"
+
+        parameter :ticket_organization_id do
+          description "The organization the comment's ticket belongs to"
+        end
 
         parameter :ticket_id do
           description "The id of the ticket the comment belongs to"
         end
       end
 
-      channel :comment_commands, "helpdesk/tickets/{ticket_id}/comments/new" do
+      channel :comment_commands, [
+        "helpdesk",
+        "tickets",
+        {:ticket_id, [:ticket, :id]},
+        "comments",
+        "new"
+      ] do
         description "Requests from other services to comment on a ticket"
 
         parameter :ticket_id do

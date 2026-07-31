@@ -27,7 +27,7 @@ defmodule AshAsyncApi.Channel.Parameter do
           description: String.t() | nil,
           default: String.t() | nil,
           location: String.t() | nil,
-          source: atom() | (term() -> term()) | nil,
+          source: atom() | [atom()] | (term() -> term()) | nil,
           enum: [String.t()],
           examples: [String.t()]
         }
@@ -39,11 +39,15 @@ defmodule AshAsyncApi.Channel.Parameter do
       doc: "The name of the parameter, as it appears in the channel address."
     ],
     source: [
-      type: {:or, [:atom, {:fun, 1}]},
+      type: {:or, [:atom, {:list, :atom}, {:fun, 1}]},
       doc: """
-      Where the value comes from when interpolating an outbound address. Either
-      a field/argument name on the subject, or a one argument function that
-      receives the subject and returns the value. Defaults to the parameter name.
+      Where the value comes from when interpolating an outbound address: a field name, a
+      relationship path like `[:organization, :id]`, or a one argument function of the
+      record.
+
+      With a segment-list address this is rarely needed — `["helpdesk", [:organization, :id]]`
+      already says where the value comes from. It exists for string addresses, and for
+      renaming a parameter whose derived name you do not like.
       """
     ],
     description: [
@@ -96,7 +100,14 @@ defmodule AshAsyncApi.Channel.Parameter do
     }
   end
 
-  @doc false
-  def source(%__MODULE__{source: nil, name: name}), do: name
+  @doc """
+  The explicit source of a parameter, or `nil` when it does not declare one.
+
+  `nil` means "use the path from the address", which is almost always right — the segment
+  `[:organization, :id]` already says where the value comes from. This deliberately does not
+  fall back to the parameter's *name*: a `parameter` block that only carries a description
+  must not change where the value is read from.
+  """
+  @spec source(t()) :: atom() | [atom()] | (term() -> term()) | nil
   def source(%__MODULE__{source: source}), do: source
 end

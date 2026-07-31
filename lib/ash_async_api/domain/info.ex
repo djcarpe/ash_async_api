@@ -21,6 +21,14 @@ defmodule AshAsyncApi.Domain.Info do
     Extension.get_opt(domain, [:async_api], :default_server, nil, true)
   end
 
+  @doc """
+  The domain-wide address delimiter override, or `nil` to let each channel's servers decide.
+  """
+  @spec default_delimiter(Spark.Dsl.t() | Ash.Domain.t()) :: String.t() | nil
+  def default_delimiter(domain) do
+    Extension.get_opt(domain, [:async_api], :default_delimiter, nil, true)
+  end
+
   @doc "Reusable security schemes for `components.securitySchemes`."
   @spec security_schemes(Spark.Dsl.t() | Ash.Domain.t()) :: map()
   def security_schemes(domain) do

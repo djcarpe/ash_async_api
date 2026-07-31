@@ -1,149 +1,291 @@
 defmodule AshAsyncApi.Address do
   @moduledoc """
-  Compiling, interpolating and matching templated channel addresses.
+  Building, interpolating and matching channel addresses.
 
-  A channel address is a string with zero or more `{parameter}` placeholders:
+  An address is a **list of segments** joined by the delimiter of whichever bus carries the
+  channel. The same declaration therefore produces the right shape on every broker:
 
-      "helpdesk/tickets/{ticket_id}/events"
+      channel :ticket_events, ["helpdesk", "tickets", :id, "events"]
 
-  Three things need to happen with that template:
+      # on MQTT   → helpdesk/tickets/{id}/events
+      # on NATS   → helpdesk.tickets.{id}.events
+      # on Redis  → helpdesk:tickets:{id}:events
 
-    * **Interpolation** — on the way out, fill the placeholders in from a record to
-      get a concrete address to publish to.
-    * **Matching** — on the way in, decide which channel a concrete address belongs
-      to and extract the parameter values.
-    * **Filtering** — translate the template into whatever wildcard syntax the
-      broker subscribes with (`+` for MQTT, `*` for NATS, ...).
+  You do not write the delimiter, because it is not a property of your API — it is a
+  property of the transport. See `AshAsyncApi.Server` for where the default comes from.
 
-  ## Separators
+  ## Segments
 
-  A placeholder matches a single address *segment*. The separator is detected from
-  the template: `/` if present, otherwise `.` (NATS style), otherwise the
-  placeholder matches greedily to the end. Pass `separator: "."` to force it.
+  | Form | Meaning | Parameter name |
+  | ---- | ------- | -------------- |
+  | `"helpdesk"` | a literal | — |
+  | `:id` | a field on the resource | `:id` |
+  | `[:organization, :id]` | a relationship traversal | `:organization_id` |
+  | `{:org, [:organization, :id]}` | a traversal with an explicit name | `:org` |
+
+  Anything that is not a literal becomes a **parameter**: interpolated from the record when
+  publishing, and extracted from the concrete address when receiving.
+
+      channel :ticket_events, ["helpdesk", :organization_id, "tickets", :id, "events"]
+      channel :ticket_events, ["helpdesk", [:organization, :slug], "tickets", :id]
+
+  ## String addresses
+
+  A plain string still works, for addresses a segment list cannot express — a parameter that
+  is only part of a segment, say:
+
+      channel :ticket_events, "helpdesk/tickets/id-{ticket_id}/events"
+
+  In string form the delimiter is auto-detected (`/` if present, otherwise `.`) unless one is
+  supplied, and `{braces}` mark the parameters.
   """
 
-  defstruct [:address, :segments, :params, :separator, :regex]
+  defstruct [:raw, :parts, :params, :param_paths, :delimiter, :regex, :template]
 
-  @type segment :: {:literal, String.t()} | {:param, atom()}
+  @typedoc "One piece of a compiled address."
+  @type part :: {:literal, String.t()} | {:param, atom(), [atom()] | nil}
+
+  @typedoc """
+  A segment as written in the DSL: a literal, a field, a relationship path, or a
+  `{name, path}` pair.
+  """
+  @type segment :: String.t() | atom() | [atom()] | {atom(), atom() | [atom()]}
 
   @type t :: %__MODULE__{
-          address: String.t(),
-          segments: [segment()],
+          raw: [segment()] | String.t(),
+          parts: [part()],
           params: [atom()],
-          separator: String.t() | nil,
-          regex: Regex.t()
+          param_paths: %{atom() => [atom()] | nil},
+          delimiter: String.t() | nil,
+          regex: Regex.t(),
+          template: String.t()
         }
 
   @placeholder ~r/\{([^{}]+)\}/
 
+  @default_delimiter "/"
+
   @doc """
-  Compile a templated address into a `t:t/0`.
+  Compile a segment list (or a string) into a `t:t/0`.
 
   ## Options
 
-    * `:separator` — the address segment separator. Auto-detected when omitted.
+    * `:delimiter` — what joins the segments. Defaults to `"/"` for a segment list; for a
+      string address it is auto-detected from the address itself.
 
   ## Examples
 
-      iex> compiled = AshAsyncApi.Address.compile("helpdesk/tickets/{ticket_id}/events")
+      iex> compiled = AshAsyncApi.Address.compile(["helpdesk", "tickets", :id, "events"], delimiter: ".")
+      iex> compiled.template
+      "helpdesk.tickets.{id}.events"
       iex> compiled.params
-      [:ticket_id]
-      iex> compiled.separator
-      "/"
+      [:id]
 
-      iex> AshAsyncApi.Address.compile("helpdesk.tickets.{ticket_id}").separator
-      "."
+      iex> compiled = AshAsyncApi.Address.compile(["tickets", [:organization, :id]])
+      iex> compiled.template
+      "tickets/{organization_id}"
+      iex> compiled.param_paths
+      %{organization_id: [:organization, :id]}
+
+      iex> AshAsyncApi.Address.compile("helpdesk/tickets/{ticket_id}").params
+      [:ticket_id]
   """
-  @spec compile(String.t(), keyword()) :: t()
-  def compile(address, opts \\ []) when is_binary(address) do
-    segments = parse(address)
-    separator = opts[:separator] || detect_separator(segments)
+  @spec compile([segment()] | String.t(), keyword()) :: t()
+  def compile(raw, opts \\ [])
+
+  def compile(segments, opts) when is_list(segments) do
+    delimiter = opts[:delimiter] || @default_delimiter
+
+    segments
+    |> Enum.map(&to_part/1)
+    |> Enum.intersperse({:literal, delimiter})
+    |> merge_literals()
+    |> build(segments, delimiter)
+  end
+
+  def compile(address, opts) when is_binary(address) do
+    parts = parse(address)
+    delimiter = opts[:delimiter] || detect_delimiter(parts)
+
+    build(parts, address, delimiter)
+  end
+
+  defp build(parts, raw, delimiter) do
+    params = for {:param, name, _path} <- parts, do: name
 
     %__MODULE__{
-      address: address,
-      segments: segments,
-      params: for({:param, name} <- segments, do: name),
-      separator: separator,
-      regex: build_regex(segments, separator)
+      raw: raw,
+      parts: parts,
+      params: params,
+      param_paths: Map.new(for {:param, name, path} <- parts, do: {name, path}),
+      delimiter: delimiter,
+      regex: build_regex(parts, delimiter),
+      template: render_template(parts)
     }
   end
 
+  # ── Segments ─────────────────────────────────────────────────────────────────────────
+
+  defp to_part(literal) when is_binary(literal), do: {:literal, literal}
+
+  defp to_part(field) when is_atom(field) and not is_nil(field), do: {:param, field, [field]}
+
+  defp to_part(path) when is_list(path) do
+    if path != [] and Enum.all?(path, &is_atom/1) do
+      {:param, path_name(path), path}
+    else
+      raise ArgumentError, """
+      Invalid address segment #{inspect(path)}.
+
+      A list segment is a relationship path and must contain only atoms, e.g
+      #{inspect([:organization, :id])}.
+      """
+    end
+  end
+
+  defp to_part({name, path}) when is_atom(name) do
+    {:param, name, path |> List.wrap() |> validate_path!(name)}
+  end
+
+  defp to_part(other) do
+    raise ArgumentError, """
+    Invalid address segment #{inspect(other)}.
+
+    A segment is one of:
+
+      "a literal"                    a literal string
+      :field                         a field on the resource
+      [:relationship, :field]        a relationship traversal
+      {:name, [:relationship, :field]}   a traversal with an explicit parameter name
+    """
+  end
+
+  defp validate_path!(path, name) do
+    if path != [] and Enum.all?(path, &is_atom/1) do
+      path
+    else
+      raise ArgumentError,
+            "Invalid source path #{inspect(path)} for address parameter #{inspect(name)}; " <>
+              "expected a field name or a list of atoms."
+    end
+  end
+
+  # `[:organization, :id]` reads best as `organization_id` — the name a belongs_to would
+  # already have given the foreign key.
+  defp path_name(path), do: path |> Enum.map_join("_", &Atom.to_string/1) |> String.to_atom()
+
+  defp merge_literals(parts) do
+    parts
+    |> Enum.reduce([], fn
+      {:literal, right}, [{:literal, left} | rest] -> [{:literal, left <> right} | rest]
+      part, acc -> [part | acc]
+    end)
+    |> Enum.reverse()
+  end
+
+  # ── Strings ──────────────────────────────────────────────────────────────────────────
+
   @doc """
-  Split a templated address into literal and parameter segments.
+  Split a string address into literal and parameter parts.
 
   ## Examples
 
       iex> AshAsyncApi.Address.parse("a/{b}/c")
-      [literal: "a/", param: :b, literal: "/c"]
+      [{:literal, "a/"}, {:param, :b, [:b]}, {:literal, "/c"}]
   """
-  @spec parse(String.t()) :: [segment()]
+  @spec parse(String.t()) :: [part()]
   def parse(address) when is_binary(address) do
     @placeholder
     |> Regex.split(address, include_captures: true, trim: true)
-    |> Enum.map(fn part ->
-      case Regex.run(@placeholder, part) do
-        [^part, name] -> {:param, String.to_atom(String.trim(name))}
-        _ -> {:literal, part}
+    |> Enum.map(fn piece ->
+      case Regex.run(@placeholder, piece) do
+        [^piece, name] ->
+          name = name |> String.trim() |> String.to_atom()
+          {:param, name, [name]}
+
+        _ ->
+          {:literal, piece}
       end
     end)
   end
 
-  @doc """
-  The parameter names in a templated address, in order.
-  """
-  @spec params(String.t() | t()) :: [atom()]
-  def params(%__MODULE__{params: params}), do: params
-  def params(address) when is_binary(address), do: for({:param, name} <- parse(address), do: name)
+  # ── Introspection ────────────────────────────────────────────────────────────────────
 
-  @doc """
-  Whether an address contains any parameters.
-  """
-  @spec templated?(String.t() | t()) :: boolean()
+  @doc "The parameter names in an address, in order."
+  @spec params(t() | [segment()] | String.t()) :: [atom()]
+  def params(%__MODULE__{params: params}), do: params
+  def params(raw), do: raw |> compile() |> Map.fetch!(:params)
+
+  @doc "The source path for each parameter."
+  @spec param_paths(t()) :: %{atom() => [atom()] | nil}
+  def param_paths(%__MODULE__{param_paths: paths}), do: paths
+
+  @doc "Whether an address has any parameters."
+  @spec templated?(t() | [segment()] | String.t()) :: boolean()
   def templated?(address), do: params(address) != []
 
   @doc """
-  Fill in an address template from a map of values.
-
-  Values may be keyed by atom or string. Returns `{:error, {:missing_params, names}}`
-  if any placeholder has no value.
+  The `{braced}` template for an address, as it appears in the AsyncAPI document.
 
   ## Examples
 
-      iex> AshAsyncApi.Address.interpolate("tickets/{id}/events", %{id: 42})
+      iex> AshAsyncApi.Address.template(["tickets", :id, "events"], delimiter: ".")
+      "tickets.{id}.events"
+  """
+  @spec template(t() | [segment()] | String.t(), keyword()) :: String.t()
+  def template(address, opts \\ [])
+  def template(%__MODULE__{template: template}, _opts), do: template
+  def template(raw, opts), do: raw |> compile(opts) |> Map.fetch!(:template)
+
+  defp render_template(parts) do
+    Enum.map_join(parts, fn
+      {:literal, literal} -> literal
+      {:param, name, _path} -> "{#{name}}"
+    end)
+  end
+
+  # ── Interpolation ────────────────────────────────────────────────────────────────────
+
+  @doc """
+  Fill in an address from a map of parameter values.
+
+  Returns `{:error, {:missing_params, names}}` when a parameter has no value.
+
+  ## Examples
+
+      iex> AshAsyncApi.Address.interpolate(["tickets", :id, "events"], %{id: 42})
       {:ok, "tickets/42/events"}
 
-      iex> AshAsyncApi.Address.interpolate("tickets/{id}", %{})
+      iex> AshAsyncApi.Address.interpolate(["tickets", :id], %{})
       {:error, {:missing_params, [:id]}}
   """
-  @spec interpolate(String.t() | t(), map()) :: {:ok, String.t()} | {:error, term()}
-  def interpolate(%__MODULE__{segments: segments}, values), do: do_interpolate(segments, values)
+  @spec interpolate(t() | [segment()] | String.t(), map()) :: {:ok, String.t()} | {:error, term()}
+  def interpolate(%__MODULE__{parts: parts}, values), do: do_interpolate(parts, values)
+  def interpolate(raw, values), do: raw |> compile() |> do_interpolate_struct(values)
 
-  def interpolate(address, values) when is_binary(address),
-    do: do_interpolate(parse(address), values)
+  defp do_interpolate_struct(%__MODULE__{parts: parts}, values), do: do_interpolate(parts, values)
 
-  defp do_interpolate(segments, values) do
-    {parts, missing} =
-      Enum.reduce(segments, {[], []}, fn
-        {:literal, literal}, {parts, missing} ->
-          {[literal | parts], missing}
+  defp do_interpolate(parts, values) do
+    {pieces, missing} =
+      Enum.reduce(parts, {[], []}, fn
+        {:literal, literal}, {pieces, missing} ->
+          {[literal | pieces], missing}
 
-        {:param, name}, {parts, missing} ->
+        {:param, name, _path}, {pieces, missing} ->
           case fetch_param(values, name) do
-            {:ok, value} -> {[to_address_value(value) | parts], missing}
-            :error -> {parts, [name | missing]}
+            {:ok, value} -> {[to_address_value(value) | pieces], missing}
+            :error -> {pieces, [name | missing]}
           end
       end)
 
     case missing do
-      [] -> {:ok, parts |> Enum.reverse() |> IO.iodata_to_binary()}
+      [] -> {:ok, pieces |> Enum.reverse() |> IO.iodata_to_binary()}
       missing -> {:error, {:missing_params, Enum.reverse(missing)}}
     end
   end
 
-  @doc """
-  Same as `interpolate/2` but raises on missing parameters.
-  """
-  @spec interpolate!(String.t() | t(), map()) :: String.t()
+  @doc "Like `interpolate/2`, but raises on missing parameters."
+  @spec interpolate!(t() | [segment()] | String.t(), map()) :: String.t()
   def interpolate!(address, values) do
     case interpolate(address, values) do
       {:ok, interpolated} ->
@@ -151,28 +293,25 @@ defmodule AshAsyncApi.Address do
 
       {:error, {:missing_params, missing}} ->
         raise ArgumentError,
-              "cannot build address #{inspect(address_string(address))}, " <>
-                "missing values for #{inspect(missing)}"
+              "cannot build address #{inspect(template(address))}, missing #{inspect(missing)}"
     end
   end
 
-  @doc """
-  Match a concrete address against a template, extracting parameter values.
+  # ── Matching ─────────────────────────────────────────────────────────────────────────
 
-  Returns `{:ok, params}` with string values, or `:error` if it does not match.
+  @doc """
+  Match a concrete address, extracting parameter values as strings.
 
   ## Examples
 
-      iex> AshAsyncApi.Address.match("tickets/{id}/events", "tickets/42/events")
+      iex> AshAsyncApi.Address.match(["tickets", :id, "events"], "tickets/42/events")
       {:ok, %{id: "42"}}
 
-      iex> AshAsyncApi.Address.match("tickets/{id}/events", "tickets/42/other")
-      :error
-
-      iex> AshAsyncApi.Address.match("tickets/{id}", "tickets/42/nested")
+      iex> AshAsyncApi.Address.match(["tickets", :id], "tickets/42/nested")
       :error
   """
-  @spec match(String.t() | t(), String.t()) :: {:ok, %{atom() => String.t()}} | :error
+  @spec match(t() | [segment()] | String.t(), String.t()) ::
+          {:ok, %{atom() => String.t()}} | :error
   def match(%__MODULE__{regex: regex, params: params}, concrete) when is_binary(concrete) do
     case Regex.run(regex, concrete, capture: :all_but_first) do
       nil -> :error
@@ -180,95 +319,82 @@ defmodule AshAsyncApi.Address do
     end
   end
 
-  def match(address, concrete) when is_binary(address),
-    do: match(compile(address), concrete)
+  def match(raw, concrete), do: raw |> compile() |> match(concrete)
+
+  # ── Broker filters ───────────────────────────────────────────────────────────────────
 
   @doc """
-  Translate a template into a broker subscription filter.
+  Translate an address into a broker subscription filter.
 
-  `style` describes the wildcard syntax the broker uses:
-
-    * `{:single, wildcard}` — each parameter becomes `wildcard`, e.g `+` for MQTT
-      or `*` for NATS.
-    * `:multi_level` — the template is truncated at the first parameter and a
-      multi-level wildcard is appended. Only useful when the broker cannot match a
-      single level.
-    * `:exact` — parameters are stripped, yielding the literal prefix. For brokers
-      with no wildcards at all (Kafka), where you subscribe to a whole topic.
+    * `{:single, wildcard}` — each parameter becomes `wildcard`, e.g `+` for MQTT.
+    * `:multi_level` — truncate at the first parameter and append a multi-level wildcard.
+    * `:exact` — strip the parameters, leaving the literal prefix. For brokers with no
+      wildcards at all.
 
   ## Examples
 
-      iex> AshAsyncApi.Address.to_filter("tickets/{id}/events", {:single, "+"})
+      iex> AshAsyncApi.Address.to_filter(["tickets", :id, "events"], {:single, "+"})
       "tickets/+/events"
 
-      iex> AshAsyncApi.Address.to_filter("tickets.{id}.events", {:single, "*"})
+      iex> AshAsyncApi.Address.to_filter(AshAsyncApi.Address.compile(["tickets", :id, "events"], delimiter: "."), {:single, "*"})
       "tickets.*.events"
 
-      iex> AshAsyncApi.Address.to_filter("tickets/{id}/events", :multi_level)
-      "tickets/#"
+      iex> AshAsyncApi.Address.to_filter(["tickets", :id, "events"], :exact)
+      "tickets"
   """
-  @spec to_filter(String.t() | t(), {:single, String.t()} | :multi_level | :exact) :: String.t()
-  def to_filter(address, style) do
-    compiled = as_compiled(address)
-    do_to_filter(compiled, style)
-  end
+  @spec to_filter(t() | [segment()] | String.t(), {:single, String.t()} | :multi_level | :exact) ::
+          String.t()
+  def to_filter(address, style), do: address |> as_compiled() |> do_to_filter(style)
 
-  defp do_to_filter(%__MODULE__{segments: segments}, {:single, wildcard}) do
-    segments
-    |> Enum.map_join(fn
+  defp do_to_filter(%__MODULE__{parts: parts}, {:single, wildcard}) do
+    Enum.map_join(parts, fn
       {:literal, literal} -> literal
-      {:param, _} -> wildcard
+      {:param, _name, _path} -> wildcard
     end)
   end
 
-  defp do_to_filter(%__MODULE__{segments: segments, separator: separator}, :multi_level) do
-    multi = if separator == ".", do: ">", else: "#"
+  defp do_to_filter(%__MODULE__{parts: parts, delimiter: delimiter}, :multi_level) do
+    multi = if delimiter == ".", do: ">", else: "#"
 
-    segments
-    |> Enum.take_while(&match?({:literal, _}, &1))
-    |> Enum.map_join(fn {:literal, literal} -> literal end)
-    |> case do
+    case literal_prefix(parts) do
       "" -> multi
       prefix -> prefix <> multi
     end
   end
 
-  defp do_to_filter(%__MODULE__{segments: segments, separator: separator}, :exact) do
-    segments
-    |> Enum.take_while(&match?({:literal, _}, &1))
-    |> Enum.map_join(fn {:literal, literal} -> literal end)
-    |> then(fn
+  defp do_to_filter(%__MODULE__{parts: parts, delimiter: delimiter}, :exact) do
+    case literal_prefix(parts) do
       "" -> ""
-      prefix when is_binary(separator) -> String.trim_trailing(prefix, separator)
+      prefix when is_binary(delimiter) -> String.trim_trailing(prefix, delimiter)
       prefix -> prefix
-    end)
-  end
-
-  @doc """
-  The static prefix of an address, up to the first parameter.
-
-  Useful as a `Group` prefix key, since `Group.members/3` treats a trailing `/`
-  as a prefix query.
-  """
-  @spec prefix(String.t() | t()) :: String.t()
-  def prefix(address), do: do_to_filter(as_compiled(address), :exact)
-
-  defp as_compiled(%__MODULE__{} = compiled), do: compiled
-  defp as_compiled(address) when is_binary(address), do: compile(address)
-
-  defp address_string(%__MODULE__{address: address}), do: address
-  defp address_string(address) when is_binary(address), do: address
-
-  defp fetch_param(values, name) when is_map(values) do
-    case Map.fetch(values, name) do
-      {:ok, nil} -> :error
-      {:ok, value} -> {:ok, value}
-      :error -> fetch_string_param(values, name)
     end
   end
 
-  defp fetch_string_param(values, name) do
-    case Map.fetch(values, Atom.to_string(name)) do
+  @doc """
+  The literal prefix of an address, up to the first parameter.
+  """
+  @spec prefix(t() | [segment()] | String.t()) :: String.t()
+  def prefix(address), do: address |> as_compiled() |> do_to_filter(:exact)
+
+  defp literal_prefix(parts) do
+    parts
+    |> Enum.take_while(&match?({:literal, _}, &1))
+    |> Enum.map_join(fn {:literal, literal} -> literal end)
+  end
+
+  # ── Helpers ──────────────────────────────────────────────────────────────────────────
+
+  defp as_compiled(%__MODULE__{} = compiled), do: compiled
+  defp as_compiled(raw), do: compile(raw)
+
+  defp fetch_param(values, name) when is_map(values) do
+    with :error <- non_nil_fetch(values, name) do
+      non_nil_fetch(values, Atom.to_string(name))
+    end
+  end
+
+  defp non_nil_fetch(values, key) do
+    case Map.fetch(values, key) do
       {:ok, nil} -> :error
       {:ok, value} -> {:ok, value}
       :error -> :error
@@ -287,9 +413,12 @@ defmodule AshAsyncApi.Address do
     end
   end
 
-  defp detect_separator(segments) do
-    literals = for {:literal, literal} <- segments, do: literal
-    joined = Enum.join(literals)
+  defp detect_delimiter(parts) do
+    joined =
+      Enum.map_join(parts, fn
+        {:literal, literal} -> literal
+        {:param, _, _} -> ""
+      end)
 
     cond do
       String.contains?(joined, "/") -> "/"
@@ -298,17 +427,16 @@ defmodule AshAsyncApi.Address do
     end
   end
 
-  defp build_regex(segments, separator) do
+  defp build_regex(parts, delimiter) do
     pattern =
-      segments
-      |> Enum.map_join(fn
+      Enum.map_join(parts, fn
         {:literal, literal} -> Regex.escape(literal)
-        {:param, _} -> param_pattern(separator)
+        {:param, _name, _path} -> param_pattern(delimiter)
       end)
 
     Regex.compile!("\\A" <> pattern <> "\\z")
   end
 
   defp param_pattern(nil), do: "(.+)"
-  defp param_pattern(separator), do: "([^" <> Regex.escape(separator) <> "]+)"
+  defp param_pattern(delimiter), do: "([^" <> Regex.escape(delimiter) <> "]+)"
 end

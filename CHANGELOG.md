@@ -33,8 +33,14 @@ Initial release.
   - `AshAsyncApi.Transport.Nats` — via `gnat`.
   - `AshAsyncApi.Transport.Kafka` — via `brod`, mapping address parameters to message
     keys.
-- `AshAsyncApi.Address` — address template compilation, interpolation, matching, and
-  translation to each broker's wildcard syntax.
+- `AshAsyncApi.Address` — addresses as **segment lists** (`["helpdesk", "tickets", :id]`)
+  joined by the delimiter of whichever bus carries the channel, with interpolation, matching
+  and translation to each broker's wildcard syntax. Segments interleave literals, fields and
+  relationship paths (`[:organization, :id]`), which are checked at compile time and resolved
+  without a query where the foreign key is already on the record. Plain string addresses with
+  `{braces}` remain supported.
+- Per-protocol delimiter defaults (`/` for MQTT, `.` for NATS/Kafka/AMQP, `:` for Redis),
+  overridable per server, per domain and per channel, with an optional transport callback.
 - `mix ash_async_api.spec` — write the document to a file, with `--check` for CI.
 - Compile-time verifiers for channel parameters, action existence, field references,
   operation name uniqueness, server references, and per-transport configuration.

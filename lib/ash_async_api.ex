@@ -17,9 +17,8 @@ defmodule AshAsyncApi do
           type "ticket"
 
           channels do
-            channel :ticket_events, "helpdesk/tickets/{ticket_id}/events" do
-              parameter :ticket_id, source: :id
-            end
+            # A segment list. The delimiter comes from the bus carrying the channel.
+            channel :ticket_events, ["helpdesk", "tickets", :id, "events"]
           end
 
           operations do
@@ -30,7 +29,8 @@ defmodule AshAsyncApi do
       end
 
   Opening a ticket now publishes a `ticketOpened` message to
-  `helpdesk/tickets/<id>/events`, and `Helpdesk.AsyncApiRouter.spec()` describes it.
+  `helpdesk/tickets/<id>/events` on MQTT — or `helpdesk.tickets.<id>.events` on NATS, from
+  the same declaration — and `Helpdesk.AsyncApiRouter.spec()` describes it.
 
   ## The three layers
 

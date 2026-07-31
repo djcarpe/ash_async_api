@@ -1,8 +1,13 @@
 defmodule AshAsyncApi.Router.Table.ResolvedChannel do
   @moduledoc """
-  A channel with everything the runtime needs already worked out: a unique document
-  key, a compiled address, the servers it is reachable on, and the operations that
-  use it.
+  A channel with everything the runtime needs already worked out: a unique document key, the
+  delimiter resolved from its servers, the address compiled with it, the servers it is
+  reachable on, and the operations that use it.
+
+  `address` is the rendered `{braced}` template — `"helpdesk/tickets/{id}/events"` — which is
+  what goes into the AsyncAPI document. The DSL holds only the segment list; the delimiter is
+  not known until the channel is matched with its servers, which is why this happens here
+  rather than at compile time.
   """
 
   defstruct [
@@ -10,6 +15,7 @@ defmodule AshAsyncApi.Router.Table.ResolvedChannel do
     :name,
     :address,
     :compiled,
+    :delimiter,
     :channel,
     :domain,
     :resource,
@@ -22,6 +28,7 @@ defmodule AshAsyncApi.Router.Table.ResolvedChannel do
           name: atom(),
           address: String.t() | nil,
           compiled: AshAsyncApi.Address.t() | nil,
+          delimiter: String.t() | nil,
           channel: AshAsyncApi.Channel.t(),
           domain: module(),
           resource: module() | nil,

@@ -106,7 +106,7 @@ end
 
 ### async_api.channels.channel
 ```elixir
-channel name, address
+channel name, segments
 ```
 
 
@@ -118,15 +118,22 @@ Declare a channel that messages flow over.
 
 ### Examples
 ```
-channel :ticket_events, "helpdesk/tickets/{ticket_id}/events" do
+channel :ticket_events, ["helpdesk", "tickets", :id, "events"] do
   description "Lifecycle events for a single ticket"
   servers [:mqtt]
-
-  parameter :ticket_id do
-    description "The id of the ticket"
-  end
 end
 
+```
+
+```
+channel :comment_events, ["helpdesk", [:ticket, :id], "comments"] do
+  description "Comments, addressed by the ticket they belong to"
+end
+
+```
+
+```
+channel :audit, "helpdesk/audit"
 ```
 
 
@@ -136,11 +143,12 @@ end
 | Name | Type | Default | Docs |
 |------|------|---------|------|
 | [`name`](#async_api-channels-channel-name){: #async_api-channels-channel-name .spark-required} | `atom` |  | The name of the channel, used to refer to it from operations. |
-| [`address`](#async_api-channels-channel-address){: #async_api-channels-channel-address .spark-required} | `String.t \| nil` |  | The address of the channel, i.e the topic/subject/routing key. May contain `{parameter}` placeholders. `nil` means the address is unknown at design time (see the AsyncAPI spec). |
+| [`segments`](#async_api-channels-channel-segments){: #async_api-channels-channel-segments .spark-required} | `list(any) \| String.t \| nil` |  | The address of the channel, as a list of segments joined by the delimiter of whichever bus carries it:     ["helpdesk", "tickets", :id, "events"] A segment is a literal string, a field name, a relationship path (`[:organization, :id]`), or a `{name, path}` pair. Everything that is not a literal becomes a parameter. A plain string is also accepted, with `{braces}` marking the parameters, for addresses a segment list cannot express. `nil` means the address is unknown at design time. |
 ### Options
 
 | Name | Type | Default | Docs |
 |------|------|---------|------|
+| [`delimiter`](#async_api-channels-channel-delimiter){: #async_api-channels-channel-delimiter } | `String.t` |  | Overrides the delimiter for this channel. Normally the delimiter comes from the server carrying the channel — `/` on MQTT, `.` on NATS — and you should not set it. Needed only when a channel spans servers whose conventions disagree. |
 | [`title`](#async_api-channels-channel-title){: #async_api-channels-channel-title } | `String.t` |  | A human friendly title for the channel. |
 | [`summary`](#async_api-channels-channel-summary){: #async_api-channels-channel-summary } | `String.t` |  | A short summary of the channel. |
 | [`description`](#async_api-channels-channel-description){: #async_api-channels-channel-description } | `String.t` |  | A longer description of the channel. CommonMark is allowed. |
@@ -183,7 +191,7 @@ parameter :tenant, source: :organization_id
 
 | Name | Type | Default | Docs |
 |------|------|---------|------|
-| [`source`](#async_api-channels-channel-parameter-source){: #async_api-channels-channel-parameter-source } | `atom \| (any -> any)` |  | Where the value comes from when interpolating an outbound address. Either a field/argument name on the subject, or a one argument function that receives the subject and returns the value. Defaults to the parameter name. |
+| [`source`](#async_api-channels-channel-parameter-source){: #async_api-channels-channel-parameter-source } | `atom \| list(atom) \| (any -> any)` |  | Where the value comes from when interpolating an outbound address: a field name, a relationship path like `[:organization, :id]`, or a one argument function of the record. With a segment-list address this is rarely needed — `["helpdesk", [:organization, :id]]` already says where the value comes from. It exists for string addresses, and for renaming a parameter whose derived name you do not like. |
 | [`description`](#async_api-channels-channel-parameter-description){: #async_api-channels-channel-parameter-description } | `String.t` |  | A description of the parameter. CommonMark is allowed. |
 | [`default`](#async_api-channels-channel-parameter-default){: #async_api-channels-channel-parameter-default } | `String.t` |  | The default value to use when no value is supplied. |
 | [`enum`](#async_api-channels-channel-parameter-enum){: #async_api-channels-channel-parameter-enum } | `list(String.t)` | `[]` | An enumeration of the values this parameter may take. |

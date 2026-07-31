@@ -1,6 +1,7 @@
 defmodule AshAsyncApi.PublishTest do
   use AshAsyncApi.RouterCase, async: false
 
+  alias AshAsyncApi.Test.Helpdesk
   alias AshAsyncApi.Test.Helpdesk.Comment
   alias AshAsyncApi.Test.Helpdesk.Ticket
   alias AshAsyncApi.Test.Router
@@ -17,7 +18,7 @@ defmodule AshAsyncApi.PublishTest do
       ticket = open_ticket(subject: "Printer on fire")
 
       assert_receive {:ash_async_api, envelope}, 500
-      assert envelope.address == "helpdesk/tickets/#{ticket.id}/events"
+      assert envelope.address == "helpdesk/acme/tickets/#{ticket.id}/events"
       assert envelope.channel == :ticket_events
       assert envelope.message == "ticketOpened"
       assert envelope.operation == :ticket_open_send
@@ -81,7 +82,7 @@ defmodule AshAsyncApi.PublishTest do
       one = open_ticket(subject: "One")
       two = open_ticket(subject: "Two")
 
-      AshAsyncApi.subscribe(Router, "helpdesk/tickets/#{one.id}/events")
+      AshAsyncApi.subscribe(Router, "helpdesk/acme/tickets/#{one.id}/events")
 
       close_ticket(two)
       refute_receive {:ash_async_api, _}, 200
@@ -118,8 +119,70 @@ defmodule AshAsyncApi.PublishTest do
       assert_receive {:ash_async_api, envelope}, 500
       assert envelope.channel == :comment_events
       assert envelope.message == "commentAdded"
-      assert envelope.address == "helpdesk/tickets/#{ticket.id}/comments"
+
+      assert envelope.address ==
+               "helpdesk/acme/tickets/#{ticket.id}/comments/#{comment.id}"
+
       assert envelope.payload.id == comment.id
+    end
+  end
+
+  describe "relationship paths in addresses" do
+    test "a belongs_to's own key is read without loading the relationship" do
+      AshAsyncApi.subscribe(Router, :comment_events)
+
+      ticket = open_ticket(subject: "Has comments")
+      comment = add_comment(ticket, "dj", "first")
+
+      assert_receive {:ash_async_api, envelope}, 500
+
+      # `[:ticket, :id]` is the foreign key already on the comment.
+      assert envelope.params.ticket_id == ticket.id
+      assert envelope.address =~ "/tickets/#{ticket.id}/comments/#{comment.id}"
+    end
+
+    test "a field beyond the foreign key is loaded through the relationship" do
+      AshAsyncApi.subscribe(Router, :comment_events)
+
+      ticket = open_ticket(subject: "Has comments")
+      add_comment(ticket, "dj", "first")
+
+      assert_receive {:ash_async_api, envelope}, 500
+
+      # `[:ticket, :organization_id]` is on the ticket, not the comment, so the publisher
+      # had to load it.
+      assert envelope.params.ticket_organization_id == ticket.organization_id
+
+      assert envelope.address ==
+               "helpdesk/acme/tickets/#{ticket.id}/comments/#{envelope.payload.id}"
+    end
+
+    test "a parameter block that only documents does not change where the value is read" do
+      # `:ticket_organization_id` is documented on the channel with no `source`. If that
+      # documentation were treated as a source, the publisher would look for a field of that
+      # name on the comment — there is none, and the address would be unfillable.
+      channel =
+        Router.__ash_async_api__()
+        |> AshAsyncApi.Router.Table.channel(:comment_events)
+
+      assert AshAsyncApi.Router.Table.ResolvedChannel.parameter(channel, :ticket_organization_id)
+      assert channel.compiled.param_paths[:ticket_organization_id] == [:ticket, :organization_id]
+
+      ticket = open_ticket(subject: "Documented params")
+      comment = add_comment(ticket, "dj", "body")
+
+      assert %{ticket_organization_id: "acme"} =
+               AshAsyncApi.Publisher.address_params(channel, comment, domain: Helpdesk)
+    end
+
+    test "a relationship that cannot be resolved reports the path it came from" do
+      channel =
+        Router.__ash_async_api__()
+        |> AshAsyncApi.Router.Table.channel(:comment_events)
+
+      # A comment struct with no ticket at all.
+      assert %{ticket_organization_id: nil} =
+               AshAsyncApi.Publisher.address_params(channel, %Comment{id: "x"}, domain: Helpdesk)
     end
   end
 
@@ -171,8 +234,9 @@ defmodule AshAsyncApi.PublishTest do
                AshAsyncApi.publish(Router, %Ticket{subject: "No id"}, action: :close)
 
       message = Exception.message(error)
-      assert message =~ "missing values for: [:ticket_id]"
-      assert message =~ "parameter :ticket_id, source:"
+      assert message =~ "missing values for: [:id]"
+      # The error names the path each missing value was read from.
+      assert message =~ "id <- [:id]"
     end
   end
 
@@ -182,11 +246,11 @@ defmodule AshAsyncApi.PublishTest do
 
       assert {:ok, envelope} =
                AshAsyncApi.publish_to(Router, :ticket_events, %{note: "hello"},
-                 params: %{ticket_id: 42},
+                 params: %{organization_id: "acme", id: 42},
                  message: "adHoc"
                )
 
-      assert envelope.address == "helpdesk/tickets/42/events"
+      assert envelope.address == "helpdesk/acme/tickets/42/events"
 
       assert_receive {:ash_async_api, received}, 500
       assert received.payload == %{note: "hello"}
@@ -262,6 +326,12 @@ defmodule AshAsyncApi.PublishTest do
   defp open_ticket(attrs) do
     Ticket
     |> Ash.Changeset.for_create(:open, Map.new(attrs))
+    |> Ash.create!()
+  end
+
+  defp add_comment(ticket, author, body) do
+    Comment
+    |> Ash.Changeset.for_create(:add, %{ticket_id: ticket.id, author: author, body: body})
     |> Ash.create!()
   end
 

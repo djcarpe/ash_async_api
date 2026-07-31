@@ -1,7 +1,8 @@
 defmodule AshAsyncApi.Test.Helpdesk.Comment do
   @moduledoc """
-  A comment. Its channels and operations are declared on the domain rather than here,
-  which exercises the domain-level DSL.
+  A comment. Its channels and operations are declared on the domain rather than here, which
+  exercises the domain-level DSL — and its addresses are built from relationship paths, so a
+  comment's address carries the ticket and organization it belongs to.
   """
 
   use Ash.Resource,
@@ -20,11 +21,6 @@ defmodule AshAsyncApi.Test.Helpdesk.Comment do
   attributes do
     uuid_primary_key :id
 
-    attribute :ticket_id, :uuid do
-      allow_nil? false
-      public? true
-    end
-
     attribute :author, :string, public?: true, allow_nil?: false
 
     attribute :body, :string do
@@ -33,6 +29,14 @@ defmodule AshAsyncApi.Test.Helpdesk.Comment do
     end
 
     create_timestamp :created_at, public?: true
+  end
+
+  relationships do
+    belongs_to :ticket, AshAsyncApi.Test.Helpdesk.Ticket do
+      allow_nil? false
+      public? true
+      attribute_writable? true
+    end
   end
 
   actions do

@@ -25,22 +25,21 @@ defmodule Helpdesk.Support.Ticket do
     hide_fields [:internal_notes]
 
     channels do
-      # One address per ticket, so a consumer can watch a single ticket rather than
-      # every ticket. Carried by MQTT.
-      channel :ticket_events, "helpdesk/tickets/{ticket_id}/events" do
+      # One address per ticket, so a consumer can watch a single ticket rather than every
+      # ticket. Carried by MQTT, so the segments are joined with `/`.
+      channel :ticket_events, ["helpdesk", :organization_id, "tickets", :id, "events"] do
         description "Lifecycle events for a single ticket"
         servers [:mqtt]
 
-        parameter :ticket_id do
-          source :id
+        parameter :id do
           description "The id of the ticket"
         end
       end
 
-      # Commands come in over NATS, where a queue group gives us exactly-once handling
-      # across the cluster. Note the `.` separators — AshAsyncApi detects them and
-      # subscribes with NATS' `*` wildcard.
-      channel :ticket_commands, "helpdesk.tickets.commands" do
+      # The identical segment style, but this channel lives on NATS — so AshAsyncApi joins
+      # it with `.` instead, and subscribes with NATS' `*` wildcard rather than MQTT's `+`.
+      # Nothing here says which; the server's protocol decides.
+      channel :ticket_commands, ["helpdesk", "tickets", "commands"] do
         description "Commands other services send to the helpdesk"
         servers [:nats]
       end
@@ -90,6 +89,15 @@ defmodule Helpdesk.Support.Ticket do
   attributes do
     uuid_primary_key :id
 
+    # Part of the channel address, so every ticket's events are partitioned by tenant on the
+    # wire: `helpdesk/acme/tickets/<id>/events`. A consumer can subscribe to one
+    # organization with `helpdesk/acme/#`.
+    attribute :organization_id, :string do
+      allow_nil? false
+      public? true
+      default "acme"
+    end
+
     attribute :subject, :string do
       allow_nil? false
       public? true
@@ -130,7 +138,7 @@ defmodule Helpdesk.Support.Ticket do
       # `internal_notes` is accepted here, but it is in `hide_fields`, which means two
       # things: it is stripped from published payloads, *and* it is stripped from inbound
       # message payloads. Local code can set it; a message from outside cannot.
-      accept [:subject, :body, :priority, :internal_notes]
+      accept [:subject, :body, :priority, :internal_notes, :organization_id]
     end
 
     update :close do

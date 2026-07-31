@@ -82,6 +82,7 @@ end
 | [`id`](#async_api-id){: #async_api-id } | `String.t` |  | A URI identifying the application, e.g `urn:com:example:helpdesk`. Rendered as the AsyncAPI document's `id`. |
 | [`default_content_type`](#async_api-default_content_type){: #async_api-default_content_type } | `String.t` | `"application/json"` | The content type used for messages that do not specify their own. |
 | [`default_server`](#async_api-default_server){: #async_api-default_server } | `atom` |  | The server used by channels that do not name any. Defaults to the only server when exactly one is declared. |
+| [`default_delimiter`](#async_api-default_delimiter){: #async_api-default_delimiter } | `String.t` |  | The delimiter joining address segments for channels in this domain, overriding what the servers' protocols imply. Set this only to settle a conflict — normally the bus decides, which is what lets one channel declaration work on MQTT and NATS alike. |
 | [`security_schemes`](#async_api-security_schemes){: #async_api-security_schemes } | `map` | `%{}` | Reusable security schemes, keyed by name, rendered into `components.securitySchemes`. |
 | [`trace?`](#async_api-trace?){: #async_api-trace? } | `boolean` | `true` | Whether to emit `:telemetry` spans for published and received messages. |
 
@@ -187,6 +188,7 @@ end
 | [`protocol`](#async_api-servers-server-protocol){: #async_api-servers-server-protocol .spark-required} | `:amqp \| :amqp1 \| :anypointmq \| :googlepubsub \| :http \| :https \| :ibmmq \| :jms \| :kafka \| :"kafka-secure" \| :mercure \| :mqtt \| :mqtts \| :nats \| :pulsar \| :redis \| :sns \| :solace \| :sqs \| :stomp \| :ws \| :wss \| :erlang \| String.t` |  | The protocol this server supports for connection, e.g `:mqtt` or `:kafka`. |
 | [`protocol_version`](#async_api-servers-server-protocol_version){: #async_api-servers-server-protocol_version } | `String.t` |  | The version of the protocol used for connection, e.g `"5"` for MQTT 5. |
 | [`pathname`](#async_api-servers-server-pathname){: #async_api-servers-server-pathname } | `String.t` |  | The path to a resource in the host, e.g `/v2`. |
+| [`delimiter`](#async_api-servers-server-delimiter){: #async_api-servers-server-delimiter } | `String.t` |  | What joins the segments of a channel address on this bus. Defaults to the convention for the server's `protocol` — `/` for MQTT, `.` for NATS, Kafka and AMQP, `:` for Redis. Set this only when your broker is configured against convention. |
 | [`transport`](#async_api-servers-server-transport){: #async_api-servers-server-transport } | `module` |  | The `AshAsyncApi.Transport` implementation that connects to this server. When omitted, the server is description-only — it appears in the generated AsyncAPI document but nothing is started for it. |
 | [`transport_opts`](#async_api-servers-server-transport_opts){: #async_api-servers-server-transport_opts } | `keyword` | `[]` | Options passed to the transport's `start_link/1`. |
 | [`title`](#async_api-servers-server-title){: #async_api-servers-server-title } | `String.t` |  | A human friendly title for the server. |
@@ -234,7 +236,7 @@ end
 
 ### async_api.channels.channel
 ```elixir
-channel name, address
+channel name, segments
 ```
 
 
@@ -246,15 +248,22 @@ Declare a channel that messages flow over.
 
 ### Examples
 ```
-channel :ticket_events, "helpdesk/tickets/{ticket_id}/events" do
+channel :ticket_events, ["helpdesk", "tickets", :id, "events"] do
   description "Lifecycle events for a single ticket"
   servers [:mqtt]
-
-  parameter :ticket_id do
-    description "The id of the ticket"
-  end
 end
 
+```
+
+```
+channel :comment_events, ["helpdesk", [:ticket, :id], "comments"] do
+  description "Comments, addressed by the ticket they belong to"
+end
+
+```
+
+```
+channel :audit, "helpdesk/audit"
 ```
 
 
@@ -264,11 +273,12 @@ end
 | Name | Type | Default | Docs |
 |------|------|---------|------|
 | [`name`](#async_api-channels-channel-name){: #async_api-channels-channel-name .spark-required} | `atom` |  | The name of the channel, used to refer to it from operations. |
-| [`address`](#async_api-channels-channel-address){: #async_api-channels-channel-address .spark-required} | `String.t \| nil` |  | The address of the channel, i.e the topic/subject/routing key. May contain `{parameter}` placeholders. `nil` means the address is unknown at design time (see the AsyncAPI spec). |
+| [`segments`](#async_api-channels-channel-segments){: #async_api-channels-channel-segments .spark-required} | `list(any) \| String.t \| nil` |  | The address of the channel, as a list of segments joined by the delimiter of whichever bus carries it:     ["helpdesk", "tickets", :id, "events"] A segment is a literal string, a field name, a relationship path (`[:organization, :id]`), or a `{name, path}` pair. Everything that is not a literal becomes a parameter. A plain string is also accepted, with `{braces}` marking the parameters, for addresses a segment list cannot express. `nil` means the address is unknown at design time. |
 ### Options
 
 | Name | Type | Default | Docs |
 |------|------|---------|------|
+| [`delimiter`](#async_api-channels-channel-delimiter){: #async_api-channels-channel-delimiter } | `String.t` |  | Overrides the delimiter for this channel. Normally the delimiter comes from the server carrying the channel — `/` on MQTT, `.` on NATS — and you should not set it. Needed only when a channel spans servers whose conventions disagree. |
 | [`title`](#async_api-channels-channel-title){: #async_api-channels-channel-title } | `String.t` |  | A human friendly title for the channel. |
 | [`summary`](#async_api-channels-channel-summary){: #async_api-channels-channel-summary } | `String.t` |  | A short summary of the channel. |
 | [`description`](#async_api-channels-channel-description){: #async_api-channels-channel-description } | `String.t` |  | A longer description of the channel. CommonMark is allowed. |
@@ -311,7 +321,7 @@ parameter :tenant, source: :organization_id
 
 | Name | Type | Default | Docs |
 |------|------|---------|------|
-| [`source`](#async_api-channels-channel-parameter-source){: #async_api-channels-channel-parameter-source } | `atom \| (any -> any)` |  | Where the value comes from when interpolating an outbound address. Either a field/argument name on the subject, or a one argument function that receives the subject and returns the value. Defaults to the parameter name. |
+| [`source`](#async_api-channels-channel-parameter-source){: #async_api-channels-channel-parameter-source } | `atom \| list(atom) \| (any -> any)` |  | Where the value comes from when interpolating an outbound address: a field name, a relationship path like `[:organization, :id]`, or a one argument function of the record. With a segment-list address this is rarely needed — `["helpdesk", [:organization, :id]]` already says where the value comes from. It exists for string addresses, and for renaming a parameter whose derived name you do not like. |
 | [`description`](#async_api-channels-channel-parameter-description){: #async_api-channels-channel-parameter-description } | `String.t` |  | A description of the parameter. CommonMark is allowed. |
 | [`default`](#async_api-channels-channel-parameter-default){: #async_api-channels-channel-parameter-default } | `String.t` |  | The default value to use when no value is supplied. |
 | [`enum`](#async_api-channels-channel-parameter-enum){: #async_api-channels-channel-parameter-enum } | `list(String.t)` | `[]` | An enumeration of the values this parameter may take. |

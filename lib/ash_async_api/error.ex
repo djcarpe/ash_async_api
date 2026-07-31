@@ -27,6 +27,34 @@ defmodule AshAsyncApi.Error do
     defp describe(resource, domain), do: "#{inspect(resource)} (domain #{inspect(domain)})"
   end
 
+  defmodule DelimiterConflict do
+    @moduledoc "A channel spans servers whose address delimiters disagree."
+    defexception [:channel, :servers, :delimiters, :domain]
+
+    @impl true
+    def message(%{channel: channel, servers: servers, delimiters: delimiters, domain: domain}) do
+      """
+      Channel #{inspect(channel)} is on servers #{inspect(servers)}, which join address \
+      segments differently: #{inspect(delimiters)}.
+
+      A channel has one address, so AshAsyncApi cannot pick for you. Either put the channel \
+      on servers that agree, or say what it should be:
+
+          channel #{inspect(channel)}, [...] do
+            delimiter #{inspect(hd(delimiters))}
+          end
+
+      To settle it for every channel in the domain instead:
+
+          async_api do
+            default_delimiter #{inspect(hd(delimiters))}
+          end
+
+      (in #{inspect(domain)})
+      """
+    end
+  end
+
   defmodule UnknownOperation do
     @moduledoc "A publish was requested for an action with no matching operation."
     defexception [:resource, :action, :direction, :router, :known]
@@ -68,26 +96,42 @@ defmodule AshAsyncApi.Error do
   end
 
   defmodule MissingAddressParams do
-    @moduledoc "A templated address could not be filled in."
-    defexception [:address, :missing, :channel, :subject]
+    @moduledoc "An address could not be filled in from the record."
+    defexception [:address, :missing, :channel, :subject, :paths]
 
     @impl true
-    def message(%{address: address, missing: missing, channel: channel}) do
+    def message(%{address: address, missing: missing, channel: channel} = error) do
       """
       Cannot build an address for channel #{inspect(channel)}.
 
           address: #{inspect(address)}
           missing values for: #{inspect(missing)}
+      #{sources(error, missing)}
+      Every non-literal segment needs a value from the record. A missing one usually means \
+      the field is nil, or that a relationship in the path could not be loaded.
 
-      Each `{parameter}` in the address needs a value. By default the value is read \
-      from the field of the same name on the record being published. If the field has \
-      a different name, point at it:
+      If the value lives somewhere else, address it directly:
 
-          channel #{inspect(channel)}, #{inspect(address)} do
-            parameter #{inspect(hd(missing))}, source: :the_actual_field
-          end
+          channel #{inspect(channel)}, ["...", #{inspect(suggest(error, missing))}]
       """
     end
+
+    defp sources(%{paths: paths}, missing) when is_map(paths) do
+      lines =
+        Enum.map_join(missing, "\n", fn name ->
+          "        #{name} <- #{inspect(Map.get(paths, name) || [name])}"
+        end)
+
+      "\n      read from:\n#{lines}\n"
+    end
+
+    defp sources(_error, _missing), do: ""
+
+    defp suggest(%{paths: paths}, [first | _]) when is_map(paths) do
+      Map.get(paths, first) || first
+    end
+
+    defp suggest(_error, [first | _]), do: first
   end
 
   defmodule NoTransport do

@@ -62,33 +62,46 @@ name in snake case, so you can leave it out.
 
 ## 2. Declare a channel
 
-A channel is where messages go — an MQTT topic, a NATS subject, a Kafka topic. Its
-address is a template, and the `{braces}` are parameters:
+A channel is where messages go — an MQTT topic, a NATS subject, a Kafka topic. Its address
+is a **list of segments**:
 
 ```elixir
 async_api do
   type "ticket"
 
   channels do
-    channel :ticket_events, "helpdesk/tickets/{ticket_id}/events" do
+    channel :ticket_events, ["helpdesk", "tickets", :id, "events"] do
       description "Lifecycle events for a single ticket"
-
-      parameter :ticket_id do
-        source :id
-        description "The id of the ticket"
-      end
     end
   end
 end
 ```
 
-`source :id` says the `{ticket_id}` value comes from the record's `:id` field. Without
-it, AshAsyncApi looks for a field called `ticket_id`, so `source` is only needed when the
-names differ.
+Note what is missing: the delimiter. You never write it, because it is not a property of
+your API — it belongs to the bus. The same declaration produces
 
-Templated addresses are worth the small extra effort: they let a consumer subscribe to one
-ticket rather than to every ticket, and they give the generated document enough
-information for tooling to construct addresses itself.
+    helpdesk/tickets/<id>/events     on MQTT
+    helpdesk.tickets.<id>.events     on NATS
+    helpdesk:tickets:<id>:events     on Redis
+
+Move the channel to a different broker and the address follows, along with the subscription
+wildcard (`+` on MQTT, `*` on NATS). See [Transports](../topics/transports.md#delimiters).
+
+A segment is a literal string, a field name, or a relationship path. Anything that is not a
+literal becomes a **parameter**:
+
+```elixir
+# tenant, ticket, and the comment itself, all in one address
+channel :comment_events,
+        ["helpdesk", [:ticket, :organization_id], "tickets", [:ticket, :id], "comments", :id]
+```
+
+`[:ticket, :organization_id]` walks the relationship, and the parameter is named after the
+path — `ticket_organization_id`. Use `{:name, path}` if you want to call it something else.
+
+Rich addresses are worth the small extra effort: they let a consumer subscribe to one
+ticket, or one tenant, rather than to everything, and they give the generated document
+enough information for tooling to construct addresses itself.
 
 ## 3. Declare operations
 
@@ -272,10 +285,13 @@ servers do
 end
 ```
 
-`helpdesk/tickets/{ticket_id}/events` becomes the MQTT topic
+`["helpdesk", "tickets", :id, "events"]` becomes the MQTT topic
 `helpdesk/tickets/<id>/events` on the way out, and the subscription filter
 `helpdesk/tickets/+/events` on the way in. Your resource definitions are unchanged, and so
 is every `AshAsyncApi.subscribe/2` call.
+
+Had you pointed it at NATS instead, the very same declaration would have produced
+`helpdesk.tickets.<id>.events` and subscribed with `helpdesk.tickets.*.events`.
 
 ## 10. Handle inbound messages
 
@@ -283,7 +299,7 @@ Add a command channel and a `subscribe` operation:
 
 ```elixir
 channels do
-  channel :ticket_commands, "helpdesk/tickets/commands"
+  channel :ticket_commands, ["helpdesk", "tickets", "commands"]
 end
 
 operations do
