@@ -15,6 +15,26 @@ defmodule AshAsyncApi.Domain.Info do
     Extension.get_opt(domain, [:async_api], :default_content_type, "application/json", true)
   end
 
+  @doc """
+  The name the `:_domain` address segment resolves to. Defaults to the domain's short
+  module name in snake case, so `Helpdesk.Support` is `"support"`.
+  """
+  @spec type(Spark.Dsl.t() | Ash.Domain.t()) :: String.t()
+  def type(domain) do
+    Extension.get_opt(domain, [:async_api], :type, nil, true) || default_type(domain)
+  end
+
+  defp default_type(domain) do
+    module =
+      if is_atom(domain) do
+        domain
+      else
+        Extension.get_persisted(domain, :module)
+      end
+
+    module |> Module.split() |> List.last() |> Macro.underscore()
+  end
+
   @doc "The server used by channels that name none."
   @spec default_server(Spark.Dsl.t() | Ash.Domain.t()) :: atom() | nil
   def default_server(domain) do

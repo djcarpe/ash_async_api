@@ -44,3 +44,21 @@ Initial release.
 - `mix ash_async_api.spec` — write the document to a file, with `--check` for CI.
 - Compile-time verifiers for channel parameters, action existence, field references,
   operation name uniqueness, server references, and per-transport configuration.
+- `publish_all` — publish every action of a type (`:create`, `:update`, `:destroy`),
+  including custom-named ones, expanded into one concrete operation per action when the
+  routing table is built. An action that also has its own `publish` on the same channel
+  keeps it. `event_name` on `publish`/`publish_all` overrides the event verb.
+- Special address segments — `:_domain`, `:_resource`, `:_event`, `:_pkey` — resolved
+  against the declaring scope at table build, so one fragment-declared channel like
+  `[:_domain, :_resource, :_event, :_pkey]` becomes a distinct, concretely addressed
+  channel per resource (`crm.lead.{event}.{id}`), each with its own payload schemas in
+  the generated document. Composite primary keys join into a single `{pkey}` token.
+  The domain's segment name is configurable with the new domain-level `type` option.
+- Runtime server configuration — `{MyRouter, servers: [nats: [transport_opts: ...]]}`
+  merges options over the compile-time declaration at startup, and
+  `servers: [nats: :disabled]` skips that transport entirely: its publishes are dropped
+  silently while in-cluster delivery over `AshAsyncApi.PubSub` keeps working. The same
+  applies to every server under `start_transports?: false`.
+- Address parameter values are sanitized on interpolation: the delimiter, whitespace and
+  broker wildcard characters in a value are flattened to `_`, so data cannot leak into
+  address structure.

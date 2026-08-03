@@ -7,6 +7,15 @@ defmodule AshAsyncApi.Test.Router do
   use AshAsyncApi.Router, domains: [AshAsyncApi.Test.Helpdesk]
 end
 
+defmodule AshAsyncApi.Test.CrmRouter do
+  @moduledoc """
+  The router for the Crm domain, whose resources publish through a shared
+  special-segment fragment.
+  """
+
+  use AshAsyncApi.Router, domains: [AshAsyncApi.Test.Crm]
+end
+
 defmodule AshAsyncApi.Test.LoopbackRouter do
   @moduledoc """
   A router with `ignore_own_messages?: false`, so that publishing a command through

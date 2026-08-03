@@ -157,10 +157,12 @@ defmodule AshAsyncApi.Router.Table do
 
     declarations
     |> Enum.flat_map(fn {scope, channels, _operations} ->
-      Enum.map(channels, &{scope, &1})
+      Enum.map(channels, &{scope, resolve_special_segments(&1, scope)})
     end)
     # AsyncAPI identifies a channel by its address, so declarations that agree on
     # name *and* segments are one channel, however many resources declared it.
+    # Special segments resolve against the declaring scope *first*, which is what
+    # turns one fragment-declared channel into a distinct channel per resource.
     |> Enum.uniq_by(fn {_scope, channel} -> {channel.name, channel.segments} end)
     |> assign_keys()
     |> Enum.map(fn {key, scope, channel} ->
@@ -182,6 +184,52 @@ defmodule AshAsyncApi.Router.Table do
         servers: channel_servers
       }
     end)
+  end
+
+  # `:_domain`, `:_resource` and `:_pkey` describe the declaration site, so they can only
+  # be resolved here, where the scope is known. `:_event` describes the *operation* that
+  # publishes, so it stays a parameter, filled by `AshAsyncApi.Publisher` per message.
+  defp resolve_special_segments(%{segments: segments} = channel, scope)
+       when is_list(segments) do
+    %{channel | segments: Enum.map(segments, &resolve_special_segment(&1, channel, scope))}
+  end
+
+  defp resolve_special_segments(channel, _scope), do: channel
+
+  defp resolve_special_segment(:_domain, _channel, scope),
+    do: AshAsyncApi.Domain.Info.type(scope.domain)
+
+  defp resolve_special_segment(:_resource, channel, scope) do
+    resource = resource_for_special!(:_resource, channel, scope)
+    resource_type(resource)
+  end
+
+  defp resolve_special_segment(:_pkey, channel, scope) do
+    resource = resource_for_special!(:_pkey, channel, scope)
+
+    case Ash.Resource.Info.primary_key(resource) do
+      [field] -> field
+      fields -> {:pkey, {:join, fields, "-"}}
+    end
+  end
+
+  defp resolve_special_segment(:_event, _channel, _scope), do: {:event, {:context, :event}}
+
+  defp resolve_special_segment(segment, _channel, _scope), do: segment
+
+  defp resource_for_special!(segment, channel, scope) do
+    scope.resource ||
+      raise ArgumentError, """
+      Channel #{inspect(channel.name)} on #{inspect(scope.domain)} uses #{inspect(segment)}, \
+      which only resolves on a resource-scoped channel.
+
+      Declare the channel on the resource (directly or through a fragment), or spell the \
+      segment out.
+      """
+  end
+
+  defp resource_type(resource) do
+    AshAsyncApi.Resource.Info.type(resource) || Macro.underscore(short_name(resource))
   end
 
   # The delimiter comes from the bus, which is the whole point of declaring addresses as
@@ -227,15 +275,28 @@ defmodule AshAsyncApi.Router.Table do
       scoped_channels
       |> Enum.frequencies_by(fn {_scope, channel} -> channel.name end)
 
-    Enum.map(scoped_channels, fn {scope, channel} ->
-      key =
-        if Map.get(counts, channel.name, 0) > 1 do
-          disambiguate(scope, channel)
-        else
-          channel.name
-        end
+    keyed =
+      Enum.map(scoped_channels, fn {scope, channel} ->
+        key =
+          if Map.get(counts, channel.name, 0) > 1 do
+            disambiguate(scope, channel)
+          else
+            channel.name
+          end
 
-      {key, scope, channel}
+        {key, scope, channel}
+      end)
+
+    # Two resources with the same type in different domains still collide after
+    # resource-level disambiguation; the domain settles it.
+    key_counts = Enum.frequencies_by(keyed, fn {key, _scope, _channel} -> key end)
+
+    Enum.map(keyed, fn {key, scope, channel} = entry ->
+      if Map.get(key_counts, key, 0) > 1 do
+        {:"#{Macro.underscore(short_name(scope.domain))}_#{key}", scope, channel}
+      else
+        entry
+      end
     end)
   end
 
@@ -259,7 +320,9 @@ defmodule AshAsyncApi.Router.Table do
 
   defp resolve_operations(declarations, channels) do
     Enum.flat_map(declarations, fn {scope, _channels, operations} ->
-      Enum.map(operations, fn operation ->
+      operations
+      |> expand_publish_all(scope)
+      |> Enum.map(fn operation ->
         resource = operation.resource || scope.resource
         channel = find_channel(channels, operation.channel, scope, resource)
 
@@ -276,10 +339,94 @@ defmodule AshAsyncApi.Router.Table do
           servers: channel.servers,
           message_name: operation.message_name,
           content_type: content_type(operation, resource, scope.domain),
-          reply_channel_key: reply_channel_key(operation, channels, scope, resource)
+          reply_channel_key: reply_channel_key(operation, channels, scope, resource),
+          event_verb: event_verb(operation, resource)
         }
       end)
     end)
+  end
+
+  # A `publish_all` becomes one operation per action of its type, named the way an
+  # explicit `publish` would have been. An action that already has its own `publish` on
+  # the same channel keeps it — expanding over it would publish the same event twice.
+  defp expand_publish_all(operations, scope) do
+    explicit =
+      for %{all?: false, direction: :send} = operation <- operations,
+          into: MapSet.new() do
+        {operation.resource || scope.resource, operation.action, operation.channel}
+      end
+
+    taken_names = operations |> Enum.map(& &1.name) |> Enum.reject(&is_nil/1) |> MapSet.new()
+
+    Enum.flat_map(operations, fn
+      %{all?: true} = operation ->
+        resource =
+          operation.resource || scope.resource ||
+            raise ArgumentError, """
+            publish_all #{inspect(operation.action_type)}, #{inspect(operation.channel)} \
+            on #{inspect(scope.domain)} has no resource to expand over.
+            """
+
+        resource
+        |> Ash.Resource.Info.actions()
+        |> Enum.filter(&(&1.type == operation.action_type))
+        |> Enum.reject(&MapSet.member?(explicit, {resource, &1.name, operation.channel}))
+        |> Enum.map(&expanded_operation(operation, &1, resource_type(resource), taken_names))
+
+      operation ->
+        [operation]
+    end)
+  end
+
+  defp expanded_operation(operation, action, type, taken_names) do
+    base = "#{type}_#{action.name}"
+
+    name =
+      cond do
+        operation.name -> :"#{operation.name}_#{action.name}"
+        MapSet.member?(taken_names, :"#{base}") -> :"#{base}_#{operation.channel}"
+        true -> :"#{base}"
+      end
+
+    %{
+      operation
+      | all?: false,
+        action: action.name,
+        action_type: action.type,
+        name: name,
+        message_name: operation.message_name || camelize(base)
+    }
+  end
+
+  # The CQRS event verb for a `:_event` address segment: an explicit `event_name` always
+  # wins; otherwise past tense by action type; generic actions fall back to the action
+  # name, whose past tense cannot be inferred.
+  defp event_verb(%{direction: :receive}, _resource), do: nil
+
+  defp event_verb(operation, resource) do
+    operation.event_name || default_event_verb(operation, resource)
+  end
+
+  defp default_event_verb(operation, resource) do
+    action_type =
+      operation.action_type ||
+        case resource && Ash.Resource.Info.action(resource, operation.action) do
+          %{type: type} -> type
+          _ -> nil
+        end
+
+    case action_type do
+      :create -> "created"
+      :update -> "updated"
+      :destroy -> "destroyed"
+      _ -> to_string(operation.action)
+    end
+  end
+
+  defp camelize(name) do
+    [first | rest] = name |> to_string() |> String.split("_", trim: true)
+
+    Enum.join([first | Enum.map(rest, &String.capitalize/1)])
   end
 
   defp find_channel(channels, name, scope, resource) do

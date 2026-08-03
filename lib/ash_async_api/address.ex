@@ -29,6 +29,30 @@ defmodule AshAsyncApi.Address do
       channel :ticket_events, ["helpdesk", :organization_id, "tickets", :id, "events"]
       channel :ticket_events, ["helpdesk", [:organization, :slug], "tickets", :id]
 
+  ## Special segments
+
+  Four segments describe the *declaration site* rather than a record field, which is what
+  lets one shared declaration — a `Spark.Dsl.Fragment`, say — produce a distinct, fully
+  concrete channel on every resource it is applied to:
+
+  | Form | Resolves to | When |
+  | ---- | ----------- | ---- |
+  | `:_domain` | the domain's `type` (its short name, snake-cased, by default) | building the routing table |
+  | `:_resource` | the resource's `async_api.type` | building the routing table |
+  | `:_pkey` | the record's primary key — the key field itself when there is one, a `{pkey}` parameter joining the fields with `-` when composite | table build / publish |
+  | `:_event` | the operation's event verb — `created`/`updated`/`destroyed` by action type, overridable with `event_name` | publish |
+
+      channel :events, [:_domain, :_resource, :_event, :_pkey]
+
+      # on the Ticket resource of a domain typed "helpdesk", carried by NATS:
+      #   helpdesk.ticket.{event}.{id}
+      # and a created ticket publishes to
+      #   helpdesk.ticket.created.9f2c...
+
+  `:_domain`, `:_resource` and `:_pkey` are resolved against the declaring scope by
+  `AshAsyncApi.Router.Table`; compiled standalone (before that resolution) they appear as
+  `{domain}`, `{resource}` and `{pkey}` parameters.
+
   ## String addresses
 
   A plain string still works, for addresses a segment list cannot express — a parameter that
@@ -42,14 +66,37 @@ defmodule AshAsyncApi.Address do
 
   defstruct [:raw, :parts, :params, :param_paths, :delimiter, :regex, :template]
 
+  @typedoc """
+  Where a parameter's value comes from.
+
+    * `[atom()]` — a field read or relationship walk on the record.
+    * `{:join, [atom()], String.t()}` — several fields, joined — how a composite
+      primary key becomes one address token.
+    * `{:context, atom()}` — supplied by the publisher rather than the record, e.g the
+      operation's event verb.
+    * `{:special, atom()}` — an unresolved special segment; `AshAsyncApi.Router.Table`
+      rewrites these against the declaring scope.
+    * `nil` — unknown; the value must arrive in the params map.
+  """
+  @type param_path ::
+          [atom()] | {:join, [atom()], String.t()} | {:context, atom()} | {:special, atom()} | nil
+
   @typedoc "One piece of a compiled address."
-  @type part :: {:literal, String.t()} | {:param, atom(), [atom()] | nil}
+  @type part :: {:literal, String.t()} | {:param, atom(), param_path()}
 
   @typedoc """
-  A segment as written in the DSL: a literal, a field, a relationship path, or a
-  `{name, path}` pair.
+  A segment as written in the DSL: a literal, a field, a relationship path, a
+  `{name, path}` pair, or one of the special segments (`:_domain`, `:_resource`,
+  `:_event`, `:_pkey`).
   """
-  @type segment :: String.t() | atom() | [atom()] | {atom(), atom() | [atom()]}
+  @type segment :: String.t() | atom() | [atom()] | {atom(), atom() | [atom()] | tuple()}
+
+  @special_segments %{
+    _domain: :domain,
+    _resource: :resource,
+    _event: :event,
+    _pkey: :pkey
+  }
 
   @type t :: %__MODULE__{
           raw: [segment()] | String.t(),
@@ -128,6 +175,11 @@ defmodule AshAsyncApi.Address do
 
   defp to_part(literal) when is_binary(literal), do: {:literal, literal}
 
+  defp to_part(special) when is_map_key(@special_segments, special) do
+    name = Map.fetch!(@special_segments, special)
+    {:param, name, {:special, name}}
+  end
+
   defp to_part(field) when is_atom(field) and not is_nil(field), do: {:param, field, [field]}
 
   defp to_part(path) when is_list(path) do
@@ -141,6 +193,14 @@ defmodule AshAsyncApi.Address do
       #{inspect([:organization, :id])}.
       """
     end
+  end
+
+  defp to_part({name, {:join, fields, joiner}}) when is_atom(name) and is_binary(joiner) do
+    {:param, name, {:join, validate_path!(fields, name), joiner}}
+  end
+
+  defp to_part({name, {:context, key}}) when is_atom(name) and is_atom(key) do
+    {:param, name, {:context, key}}
   end
 
   defp to_part({name, path}) when is_atom(name) do
@@ -260,12 +320,12 @@ defmodule AshAsyncApi.Address do
       {:error, {:missing_params, [:id]}}
   """
   @spec interpolate(t() | [segment()] | String.t(), map()) :: {:ok, String.t()} | {:error, term()}
-  def interpolate(%__MODULE__{parts: parts}, values), do: do_interpolate(parts, values)
-  def interpolate(raw, values), do: raw |> compile() |> do_interpolate_struct(values)
+  def interpolate(%__MODULE__{parts: parts, delimiter: delimiter}, values),
+    do: do_interpolate(parts, values, delimiter)
 
-  defp do_interpolate_struct(%__MODULE__{parts: parts}, values), do: do_interpolate(parts, values)
+  def interpolate(raw, values), do: raw |> compile() |> interpolate(values)
 
-  defp do_interpolate(parts, values) do
+  defp do_interpolate(parts, values, delimiter) do
     {pieces, missing} =
       Enum.reduce(parts, {[], []}, fn
         {:literal, literal}, {pieces, missing} ->
@@ -273,7 +333,7 @@ defmodule AshAsyncApi.Address do
 
         {:param, name, _path}, {pieces, missing} ->
           case fetch_param(values, name) do
-            {:ok, value} -> {[to_address_value(value) | pieces], missing}
+            {:ok, value} -> {[sanitize(to_address_value(value), delimiter) | pieces], missing}
             :error -> {pieces, [name | missing]}
           end
       end)
@@ -281,6 +341,36 @@ defmodule AshAsyncApi.Address do
     case missing do
       [] -> {:ok, pieces |> Enum.reverse() |> IO.iodata_to_binary()}
       missing -> {:error, {:missing_params, Enum.reverse(missing)}}
+    end
+  end
+
+  # A parameter value containing the delimiter would change the address's depth, and one
+  # containing a wildcard could turn a concrete subject into a filter on some brokers.
+  # Both are data leaking into structure, so they are flattened to `_` — the same rule
+  # whatever the bus, to keep one record's address identical across transports.
+  @unsafe_in_values ["*", ">", "#", "+", " ", "\t", "\n", "\r"]
+
+  @doc """
+  Make a value safe to embed as one address token.
+
+  Replaces the delimiter, whitespace, and broker wildcard characters with `_`.
+
+  ## Examples
+
+      iex> AshAsyncApi.Address.sanitize("v1.2.3", ".")
+      "v1_2_3"
+
+      iex> AshAsyncApi.Address.sanitize("plain", ".")
+      "plain"
+  """
+  @spec sanitize(String.t(), String.t() | nil) :: String.t()
+  def sanitize(value, delimiter) do
+    unsafe = if delimiter, do: [delimiter | @unsafe_in_values], else: @unsafe_in_values
+
+    if String.contains?(value, unsafe) do
+      String.replace(value, unsafe, "_")
+    else
+      value
     end
   end
 

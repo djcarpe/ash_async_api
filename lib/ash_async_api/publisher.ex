@@ -180,8 +180,13 @@ defmodule AshAsyncApi.Publisher do
       {:ok, :filtered}
     else
       # Resolved once: a relationship-backed parameter can cost a query, and the envelope
-      # needs the same values twice.
-      params = address_params(channel, record, domain: operation.domain)
+      # needs the same values twice. The context carries what the record cannot: the
+      # operation's event verb, for channels addressed with `:_event`.
+      params =
+        address_params(channel, record,
+          domain: operation.domain,
+          context: %{event: operation.event_verb}
+        )
 
       with {:ok, payload} <- AshAsyncApi.Payload.for_send(operation, record),
            {:ok, address} <- address_for(channel, params) do
@@ -258,7 +263,7 @@ defmodule AshAsyncApi.Publisher do
     end)
   end
 
-  defp param_value(nil, path, record, opts), do: walk(record, path, opts)
+  defp param_value(nil, path, record, opts), do: resolve_path(path, record, opts)
 
   defp param_value(parameter, path, record, opts) do
     # A `parameter` block usually only documents; it overrides where the value comes from
@@ -266,7 +271,7 @@ defmodule AshAsyncApi.Publisher do
     # silently break `[:organization, :id]`, whose value is not on the record at all.
     value =
       case AshAsyncApi.Channel.Parameter.source(parameter) do
-        nil -> walk(record, path, opts)
+        nil -> resolve_path(path, record, opts)
         source when is_function(source, 1) -> source.(record)
         source when is_list(source) -> walk(record, source, opts)
         source when is_atom(source) -> walk(record, [source], opts)
@@ -274,6 +279,28 @@ defmodule AshAsyncApi.Publisher do
 
     value || parameter.default
   end
+
+  # `{:context, key}` values come from the publisher, not the record — the operation's
+  # event verb today. `{:join, fields, joiner}` packs a composite primary key into one
+  # address token; a nil component becomes `_` rather than sinking the whole message.
+  defp resolve_path({:context, key}, _record, opts) do
+    Map.get(opts[:context] || %{}, key)
+  end
+
+  defp resolve_path({:join, fields, joiner}, record, _opts) do
+    Enum.map_join(fields, joiner, fn field ->
+      case read_field(record, field) do
+        nil -> "_"
+        value -> to_string(value)
+      end
+    end)
+  end
+
+  # An unresolved special segment: only possible when a compiled address is used outside
+  # the routing table. There is no record-side value for it.
+  defp resolve_path({:special, _name}, _record, _opts), do: nil
+
+  defp resolve_path(path, record, opts) when is_list(path), do: walk(record, path, opts)
 
   @doc false
   # Walk a source path to a value. `[:id]` is a plain field read; anything longer traverses
@@ -392,23 +419,28 @@ defmodule AshAsyncApi.Publisher do
   end
 
   defp to_transports(table, channel, envelope) do
-    contexts =
-      channel.servers
-      |> Enum.flat_map(fn name ->
-        case Map.get(table.servers, name) do
-          {domain, %{transport: transport} = server} when not is_nil(transport) ->
-            [Context.new(table.router, domain, server)]
-
-          _ ->
-            []
-        end
-      end)
+    active = AshAsyncApi.Supervisor.active_servers(table.router)
+    contexts = Enum.flat_map(channel.servers, &server_context(table, &1, active))
 
     # A channel with no transport at all is a deliberate configuration — spec-only,
     # or in-cluster delivery over `AshAsyncApi.PubSub`. Nothing to do, and nothing wrong.
     case contexts do
       [] -> :ok
       contexts -> publish_to_contexts(contexts, envelope)
+    end
+  end
+
+  # A server the supervisor deliberately did not start — disabled at runtime, or
+  # `start_transports?: false` — is a silent skip, not a failure. When no supervisor has
+  # run at all (`active` is nil) every server is assumed live, so a missing connection
+  # still surfaces as the error it is.
+  defp server_context(table, name, active) do
+    with {domain, %{transport: transport} = server} when not is_nil(transport) <-
+           Map.get(table.servers, name),
+         true <- is_nil(active) or MapSet.member?(active, name) do
+      [Context.new(table.router, domain, server)]
+    else
+      _ -> []
     end
   end
 

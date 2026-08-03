@@ -19,13 +19,18 @@ defmodule AshAsyncApi.Resource.Transformers.DefaultOperationNames do
     operations = Transformer.get_entities(dsl, [:async_api, :operations])
     ambiguous = ambiguous_actions(operations)
 
+    # `publish_all` operations have no action to derive names from; they are named per
+    # expanded action when the routing table is built.
     dsl =
-      Enum.reduce(operations, dsl, fn operation, dsl ->
+      operations
+      |> Enum.reject(& &1.all?)
+      |> Enum.reduce(dsl, fn operation, dsl ->
         Transformer.replace_entity(
           dsl,
           [:async_api, :operations],
           fill_in(operation, type, resource, dsl, ambiguous),
-          &(&1.action == operation.action and &1.direction == operation.direction)
+          &(not &1.all? and &1.action == operation.action and
+              &1.direction == operation.direction)
         )
       end)
 
@@ -41,6 +46,7 @@ defmodule AshAsyncApi.Resource.Transformers.DefaultOperationNames do
   # out of the running, so the other keeps the clean default.
   defp ambiguous_actions(operations) do
     operations
+    |> Enum.reject(& &1.all?)
     |> Enum.filter(&is_nil(&1.name))
     |> Enum.group_by(& &1.action)
     |> Enum.filter(fn {_action, ops} -> length(ops) > 1 end)

@@ -36,11 +36,13 @@ defmodule AshAsyncApi.Operation do
     :actor,
     :tenant,
     :headers,
+    :event_name,
     :__spark_metadata__,
     tags: [],
     bindings: %{},
     upsert?: false,
-    action_type: nil
+    action_type: nil,
+    all?: false
   ]
 
   @type direction :: :send | :receive
@@ -67,10 +69,12 @@ defmodule AshAsyncApi.Operation do
           actor: term(),
           tenant: term(),
           headers: map() | (term() -> map()) | nil,
+          event_name: String.t() | nil,
           tags: [String.t()],
           bindings: map(),
           upsert?: boolean(),
-          action_type: atom() | nil
+          action_type: atom() | nil,
+          all?: boolean()
         }
 
   @shared_schema [
@@ -142,48 +146,70 @@ defmodule AshAsyncApi.Operation do
     ]
   ]
 
-  @publish_schema @shared_schema ++
-                    [
-                      payload_fields: [
-                        type: {:list, :atom},
-                        doc: """
-                        The fields to include in the message payload. Defaults to
-                        the resource's public attributes (minus `except_fields`).
-                        """
-                      ],
-                      except_fields: [
-                        type: {:list, :atom},
-                        default: [],
-                        doc: "Fields to exclude from the message payload."
-                      ],
-                      transform: [
-                        type: {:fun, 2},
-                        doc: """
-                        A function of `(payload, subject)` returning the final payload.
-                        Runs after field selection.
-                        """,
-                        snippet: "fn ${1:payload}, ${2:subject} -> $3 end"
-                      ],
-                      filter: [
-                        type: {:fun, 2},
-                        doc: """
-                        A function of `(record, notification_or_context)` returning a
-                        boolean. When it returns `false` the message is not published.
-                        """,
-                        snippet: "fn ${1:record}, ${2:context} -> $3 end"
-                      ],
-                      headers: [
-                        type: {:or, [:map, {:fun, 1}]},
-                        doc: """
-                        Static headers, or a one argument function of the subject
-                        returning a map of headers.
-                        """
-                      ],
-                      reply_channel: [
-                        type: :atom,
-                        doc: "The channel a reply to this message should be sent on."
-                      ]
-                    ]
+  @publish_options [
+    payload_fields: [
+      type: {:list, :atom},
+      doc: """
+      The fields to include in the message payload. Defaults to
+      the resource's public attributes (minus `except_fields`).
+      """
+    ],
+    except_fields: [
+      type: {:list, :atom},
+      default: [],
+      doc: "Fields to exclude from the message payload."
+    ],
+    transform: [
+      type: {:fun, 2},
+      doc: """
+      A function of `(payload, subject)` returning the final payload.
+      Runs after field selection.
+      """,
+      snippet: "fn ${1:payload}, ${2:subject} -> $3 end"
+    ],
+    filter: [
+      type: {:fun, 2},
+      doc: """
+      A function of `(record, notification_or_context)` returning a
+      boolean. When it returns `false` the message is not published.
+      """,
+      snippet: "fn ${1:record}, ${2:context} -> $3 end"
+    ],
+    headers: [
+      type: {:or, [:map, {:fun, 1}]},
+      doc: """
+      Static headers, or a one argument function of the subject
+      returning a map of headers.
+      """
+    ],
+    event_name: [
+      type: :string,
+      doc: """
+      The event verb this operation represents, used by the `:_event` address
+      segment. Defaults to `created`/`updated`/`destroyed` by action type, and to
+      the action name otherwise. Past tense by convention, e.g `"deployed"`.
+      """
+    ],
+    reply_channel: [
+      type: :atom,
+      doc: "The channel a reply to this message should be sent on."
+    ]
+  ]
+
+  @publish_schema @shared_schema ++ @publish_options
+
+  @publish_all_schema Keyword.delete(@shared_schema, :action) ++
+                        [
+                          action_type: [
+                            type: {:in, [:create, :update, :destroy]},
+                            required: true,
+                            doc: """
+                            The action type to publish. Every action of this type on the
+                            resource publishes through this operation, expanded into one
+                            operation per action when the routing table is built.
+                            """
+                          ]
+                        ] ++ @publish_options
 
   @subscribe_schema @shared_schema ++
                       [
@@ -247,6 +273,9 @@ defmodule AshAsyncApi.Operation do
   def publish_schema, do: @publish_schema
 
   @doc false
+  def publish_all_schema, do: @publish_all_schema
+
+  @doc false
   def subscribe_schema, do: @subscribe_schema
 
   @doc false
@@ -271,6 +300,35 @@ defmodule AshAsyncApi.Operation do
       target: __MODULE__,
       schema: @publish_schema,
       auto_set_fields: [direction: :send]
+    }
+  end
+
+  @doc false
+  def publish_all_entity do
+    %Spark.Dsl.Entity{
+      name: :publish_all,
+      describe: """
+      Emit a message onto a channel when any action of a type runs.
+
+      Covers every create, update or destroy action on the resource — including
+      custom-named ones — where `publish` names one action. When the routing table is
+      built, a `publish_all` expands into one operation per matching action, so the
+      generated document still lists every concrete operation. An action that also has
+      its own `publish` on the same channel is left to that `publish`, rather than
+      publishing twice.
+      """,
+      examples: [
+        "publish_all :create, :events",
+        """
+        publish_all :update, :events do
+          headers &MyApp.EventHeaders.build/1
+        end
+        """
+      ],
+      args: [:action_type, :channel],
+      target: __MODULE__,
+      schema: @publish_all_schema,
+      auto_set_fields: [direction: :send, all?: true]
     }
   end
 

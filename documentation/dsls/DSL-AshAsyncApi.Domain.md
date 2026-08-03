@@ -51,6 +51,7 @@ Configure the AsyncAPI document and messaging for this domain.
      * parameter
  * [operations](#async_api-operations)
    * publish
+   * publish_all
    * subscribe
 
 
@@ -80,6 +81,7 @@ end
 | Name | Type | Default | Docs |
 |------|------|---------|------|
 | [`id`](#async_api-id){: #async_api-id } | `String.t` |  | A URI identifying the application, e.g `urn:com:example:helpdesk`. Rendered as the AsyncAPI document's `id`. |
+| [`type`](#async_api-type){: #async_api-type } | `String.t` |  | The name the `:_domain` address segment resolves to for this domain's channels. Defaults to the domain's short module name in snake case. |
 | [`default_content_type`](#async_api-default_content_type){: #async_api-default_content_type } | `String.t` | `"application/json"` | The content type used for messages that do not specify their own. |
 | [`default_server`](#async_api-default_server){: #async_api-default_server } | `atom` |  | The server used by channels that do not name any. Defaults to the only server when exactly one is declared. |
 | [`default_delimiter`](#async_api-default_delimiter){: #async_api-default_delimiter } | `String.t` |  | The delimiter joining address segments for channels in this domain, overriding what the servers' protocols imply. Set this only to settle a conflict — normally the bus decides, which is what lets one channel declaration work on MQTT and NATS alike. |
@@ -353,6 +355,7 @@ names the resource it applies to first.
 
 ### Nested DSLs
  * [publish](#async_api-operations-publish)
+ * [publish_all](#async_api-operations-publish_all)
  * [subscribe](#async_api-operations-subscribe)
 
 
@@ -426,7 +429,78 @@ end
 | [`transform`](#async_api-operations-publish-transform){: #async_api-operations-publish-transform } | `(any, any -> any)` |  | A function of `(payload, subject)` returning the final payload. Runs after field selection. |
 | [`filter`](#async_api-operations-publish-filter){: #async_api-operations-publish-filter } | `(any, any -> any)` |  | A function of `(record, notification_or_context)` returning a boolean. When it returns `false` the message is not published. |
 | [`headers`](#async_api-operations-publish-headers){: #async_api-operations-publish-headers } | `map \| (any -> any)` |  | Static headers, or a one argument function of the subject returning a map of headers. |
+| [`event_name`](#async_api-operations-publish-event_name){: #async_api-operations-publish-event_name } | `String.t` |  | The event verb this operation represents, used by the `:_event` address segment. Defaults to `created`/`updated`/`destroyed` by action type, and to the action name otherwise. Past tense by convention, e.g `"deployed"`. |
 | [`reply_channel`](#async_api-operations-publish-reply_channel){: #async_api-operations-publish-reply_channel } | `atom` |  | The channel a reply to this message should be sent on. |
+
+
+
+
+
+### Introspection
+
+Target: `AshAsyncApi.Operation`
+
+### async_api.operations.publish_all
+```elixir
+publish_all resource, action_type, channel
+```
+
+
+Emit a message onto a channel when any action of a type runs.
+
+Covers every create, update or destroy action on the resource — including
+custom-named ones — where `publish` names one action. When the routing table is
+built, a `publish_all` expands into one operation per matching action, so the
+generated document still lists every concrete operation. An action that also has
+its own `publish` on the same channel is left to that `publish`, rather than
+publishing twice.
+
+
+
+
+### Examples
+```
+publish_all :create, :events
+```
+
+```
+publish_all :update, :events do
+  headers &MyApp.EventHeaders.build/1
+end
+
+```
+
+
+
+### Arguments
+
+| Name | Type | Default | Docs |
+|------|------|---------|------|
+| [`resource`](#async_api-operations-publish_all-resource){: #async_api-operations-publish_all-resource .spark-required} | `module` |  | The resource whose action this operation is bound to. |
+| [`action_type`](#async_api-operations-publish_all-action_type){: #async_api-operations-publish_all-action_type .spark-required} | `:create \| :update \| :destroy` |  | The action type to publish. Every action of this type on the resource publishes through this operation, expanded into one operation per action when the routing table is built. |
+| [`channel`](#async_api-operations-publish_all-channel){: #async_api-operations-publish_all-channel .spark-required} | `atom` |  | The name of the channel this operation acts on. |
+### Options
+
+| Name | Type | Default | Docs |
+|------|------|---------|------|
+| [`name`](#async_api-operations-publish_all-name){: #async_api-operations-publish_all-name } | `atom` |  | A unique name for the operation, used as the operation id in the generated AsyncAPI document. Defaults to `<type>_<action>`. |
+| [`message_name`](#async_api-operations-publish_all-message_name){: #async_api-operations-publish_all-message_name } | `String.t` |  | The name of the message this operation carries. Defaults to a camelized `<type>_<action>`, e.g `ticketOpened`. |
+| [`message_title`](#async_api-operations-publish_all-message_title){: #async_api-operations-publish_all-message_title } | `String.t` |  | A human friendly title for the message. |
+| [`content_type`](#async_api-operations-publish_all-content_type){: #async_api-operations-publish_all-content_type } | `String.t` |  | The content type of the message payload. Defaults to the domain's `default_content_type`. |
+| [`title`](#async_api-operations-publish_all-title){: #async_api-operations-publish_all-title } | `String.t` |  | A human friendly title for the operation. |
+| [`summary`](#async_api-operations-publish_all-summary){: #async_api-operations-publish_all-summary } | `String.t` |  | A short summary of what the operation is about. |
+| [`description`](#async_api-operations-publish_all-description){: #async_api-operations-publish_all-description } | `String.t` |  | A longer description of the operation. CommonMark is allowed. |
+| [`external_docs`](#async_api-operations-publish_all-external_docs){: #async_api-operations-publish_all-external_docs } | `String.t` |  | A URL pointing to external documentation for this operation. |
+| [`tags`](#async_api-operations-publish_all-tags){: #async_api-operations-publish_all-tags } | `list(String.t)` | `[]` | Tags for logically grouping operations. |
+| [`bindings`](#async_api-operations-publish_all-bindings){: #async_api-operations-publish_all-bindings } | `map` | `%{}` | Protocol specific information, keyed by protocol name. |
+| [`correlation_id`](#async_api-operations-publish_all-correlation_id){: #async_api-operations-publish_all-correlation_id } | `String.t` |  | A runtime expression locating the correlation id, e.g `$message.header#/correlationId`. Used to tie replies back to requests. |
+| [`payload_fields`](#async_api-operations-publish_all-payload_fields){: #async_api-operations-publish_all-payload_fields } | `list(atom)` |  | The fields to include in the message payload. Defaults to the resource's public attributes (minus `except_fields`). |
+| [`except_fields`](#async_api-operations-publish_all-except_fields){: #async_api-operations-publish_all-except_fields } | `list(atom)` | `[]` | Fields to exclude from the message payload. |
+| [`transform`](#async_api-operations-publish_all-transform){: #async_api-operations-publish_all-transform } | `(any, any -> any)` |  | A function of `(payload, subject)` returning the final payload. Runs after field selection. |
+| [`filter`](#async_api-operations-publish_all-filter){: #async_api-operations-publish_all-filter } | `(any, any -> any)` |  | A function of `(record, notification_or_context)` returning a boolean. When it returns `false` the message is not published. |
+| [`headers`](#async_api-operations-publish_all-headers){: #async_api-operations-publish_all-headers } | `map \| (any -> any)` |  | Static headers, or a one argument function of the subject returning a map of headers. |
+| [`event_name`](#async_api-operations-publish_all-event_name){: #async_api-operations-publish_all-event_name } | `String.t` |  | The event verb this operation represents, used by the `:_event` address segment. Defaults to `created`/`updated`/`destroyed` by action type, and to the action name otherwise. Past tense by convention, e.g `"deployed"`. |
+| [`reply_channel`](#async_api-operations-publish_all-reply_channel){: #async_api-operations-publish_all-reply_channel } | `atom` |  | The channel a reply to this message should be sent on. |
 
 
 
