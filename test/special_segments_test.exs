@@ -25,6 +25,54 @@ defmodule AshAsyncApi.SpecialSegmentsTest do
       assert tag_events.resource == Tag
     end
 
+    test "a resource without a primary key gets a placeholder token" do
+      defmodule Keyless do
+        use Ash.Resource,
+          domain: nil,
+          validate_domain_inclusion?: false,
+          data_layer: Ash.DataLayer.Ets,
+          extensions: [AshAsyncApi.Resource]
+
+        ets do
+          private? true
+        end
+
+        async_api do
+          type "keyless"
+
+          channels do
+            channel :events, [:_resource, :_event, :_pkey]
+          end
+
+          operations do
+            publish_all :create, :events
+          end
+        end
+
+        attributes do
+          attribute :label, :string, public?: true
+        end
+
+        actions do
+          defaults [:read, create: :*]
+        end
+      end
+
+      defmodule KeylessDomain do
+        use Ash.Domain, extensions: [AshAsyncApi.Domain], validate_config_inclusion?: false
+
+        resources do
+          resource Keyless
+        end
+      end
+
+      table = Table.build(:keyless_router, [KeylessDomain])
+
+      assert [channel] = table.channels
+      # An empty token would be an illegal NATS subject; `_` keeps the depth stable.
+      assert channel.address == "keyless/{event}/_"
+    end
+
     test "a domain-scoped channel cannot use resource-specific segments" do
       defmodule BadDomain do
         use Ash.Domain, extensions: [AshAsyncApi.Domain], validate_config_inclusion?: false

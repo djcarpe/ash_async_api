@@ -208,6 +208,9 @@ defmodule AshAsyncApi.Router.Table do
     resource = resource_for_special!(:_pkey, channel, scope)
 
     case Ash.Resource.Info.primary_key(resource) do
+      # A resource without a primary key still gets a valid, depth-stable address —
+      # an empty token would be an illegal subject on NATS.
+      [] -> "_"
       [field] -> field
       fields -> {:pkey, {:join, fields, "-"}}
     end
