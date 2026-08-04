@@ -47,6 +47,7 @@ spark_locals_without_parens = [
   reply_channel: 1,
   security: 1,
   security_schemes: 1,
+  segment_naming: 1,
   server: 2,
   server: 3,
   servers: 1,

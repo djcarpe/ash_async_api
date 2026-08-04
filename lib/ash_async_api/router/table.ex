@@ -196,12 +196,13 @@ defmodule AshAsyncApi.Router.Table do
 
   defp resolve_special_segments(channel, _scope), do: channel
 
-  defp resolve_special_segment(:_domain, _channel, scope),
-    do: AshAsyncApi.Domain.Info.type(scope.domain)
+  defp resolve_special_segment(:_domain, _channel, scope) do
+    segment_name(scope.domain, AshAsyncApi.Domain.Info.type(scope.domain), scope.domain)
+  end
 
   defp resolve_special_segment(:_resource, channel, scope) do
     resource = resource_for_special!(:_resource, channel, scope)
-    resource_type(resource)
+    segment_name(resource, resource_type(resource), scope.domain)
   end
 
   defp resolve_special_segment(:_pkey, channel, scope) do
@@ -233,6 +234,24 @@ defmodule AshAsyncApi.Router.Table do
 
   defp resource_type(resource) do
     AshAsyncApi.Resource.Info.type(resource) || Macro.underscore(short_name(resource))
+  end
+
+  # The domain's `segment_naming` decides how a module's type becomes an address
+  # segment. `:snake` and `:camel` re-case the type — idempotent for the defaults,
+  # normalizing for hand-written ones — and a function gets the module itself, so it
+  # can ignore the type entirely.
+  defp segment_name(module, type, domain) do
+    case AshAsyncApi.Domain.Info.segment_naming(domain) do
+      :snake -> Macro.underscore(type)
+      :camel -> lower_camelize(type)
+      fun when is_function(fun, 1) -> fun.(module) |> to_string()
+    end
+  end
+
+  defp lower_camelize(name) do
+    [first | rest] = name |> to_string() |> String.split("_", trim: true)
+
+    Enum.join([first | Enum.map(rest, &String.capitalize/1)])
   end
 
   # The delimiter comes from the bus, which is the whole point of declaring addresses as

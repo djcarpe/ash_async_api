@@ -73,6 +73,107 @@ defmodule AshAsyncApi.SpecialSegmentsTest do
       assert channel.address == "keyless/{event}/_"
     end
 
+    test "segment_naming :camel renders the domain and resource segments lowerCamel" do
+      defmodule CamelWorkOrder do
+        use Ash.Resource,
+          domain: nil,
+          validate_domain_inclusion?: false,
+          data_layer: Ash.DataLayer.Ets,
+          extensions: [AshAsyncApi.Resource]
+
+        ets do
+          private? true
+        end
+
+        async_api do
+          channels do
+            channel :events, [:_domain, :_resource, :_event, :_pkey]
+          end
+
+          operations do
+            publish_all :create, :events
+          end
+        end
+
+        attributes do
+          uuid_primary_key :id
+        end
+
+        actions do
+          defaults [:read, create: :*]
+        end
+      end
+
+      defmodule CamelServiceDesk do
+        use Ash.Domain, extensions: [AshAsyncApi.Domain], validate_config_inclusion?: false
+
+        async_api do
+          segment_naming :camel
+        end
+
+        resources do
+          resource CamelWorkOrder
+        end
+      end
+
+      table = Table.build(:camel_router, [CamelServiceDesk])
+
+      assert [channel] = table.channels
+      # Domain "camel_service_desk" and resource "camel_work_order", re-cased.
+      assert channel.address == "camelServiceDesk/camelWorkOrder/{event}/{id}"
+    end
+
+    test "segment_naming as a function takes full control of both segments" do
+      defmodule FunOrder do
+        use Ash.Resource,
+          domain: nil,
+          validate_domain_inclusion?: false,
+          data_layer: Ash.DataLayer.Ets,
+          extensions: [AshAsyncApi.Resource]
+
+        ets do
+          private? true
+        end
+
+        async_api do
+          channels do
+            channel :events, [:_domain, :_resource, :_event, :_pkey]
+          end
+
+          operations do
+            publish_all :create, :events
+          end
+        end
+
+        attributes do
+          uuid_primary_key :id
+        end
+
+        actions do
+          defaults [:read, create: :*]
+        end
+      end
+
+      defmodule FunDesk do
+        use Ash.Domain, extensions: [AshAsyncApi.Domain], validate_config_inclusion?: false
+
+        async_api do
+          segment_naming fn module ->
+            "v2-" <> (module |> Module.split() |> List.last() |> String.downcase())
+          end
+        end
+
+        resources do
+          resource FunOrder
+        end
+      end
+
+      table = Table.build(:fun_router, [FunDesk])
+
+      assert [channel] = table.channels
+      assert channel.address == "v2-fundesk/v2-funorder/{event}/{id}"
+    end
+
     test "a domain-scoped channel cannot use resource-specific segments" do
       defmodule BadDomain do
         use Ash.Domain, extensions: [AshAsyncApi.Domain], validate_config_inclusion?: false
