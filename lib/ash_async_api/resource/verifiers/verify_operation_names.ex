@@ -12,7 +12,12 @@ defmodule AshAsyncApi.Resource.Verifiers.VerifyOperationNames do
 
   @impl true
   def verify(dsl) do
-    operations = Verifier.get_entities(dsl, [:async_api, :operations])
+    # `publish_all` operations have no name or message name yet — they get one per
+    # expanded action when the routing table is built, unique by construction.
+    operations =
+      dsl
+      |> Verifier.get_entities([:async_api, :operations])
+      |> Enum.reject(& &1.all?)
 
     with :ok <- verify_unique(dsl, operations, & &1.name, "operation name") do
       verify_unique(dsl, operations, &{&1.channel, &1.message_name}, "message name")

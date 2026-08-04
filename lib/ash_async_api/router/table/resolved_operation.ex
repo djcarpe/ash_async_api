@@ -19,6 +19,7 @@ defmodule AshAsyncApi.Router.Table.ResolvedOperation do
     :message_name,
     :content_type,
     :reply_channel_key,
+    :event_verb,
     servers: []
   ]
 
@@ -35,6 +36,7 @@ defmodule AshAsyncApi.Router.Table.ResolvedOperation do
           message_name: String.t(),
           content_type: String.t(),
           reply_channel_key: atom() | nil,
+          event_verb: String.t() | nil,
           servers: [atom()]
         }
 end

@@ -36,6 +36,27 @@ defmodule AshAsyncApi.Router do
     * `:start_transports?` — whether to start transports at all. Defaults to `true`;
       `false` gives you spec generation and in-cluster pub/sub with no broker
       connections, which is handy in tests and in mix tasks.
+    * `:servers` — runtime configuration for individual servers, keyed by server name.
+      `:disabled` skips that server's transport and silently drops its publishes; a
+      keyword list is merged over the server's compile-time `transport_opts`. Usually
+      passed to the child spec rather than to `use`, because runtime configuration is
+      the point:
+
+          children = [
+            {Helpdesk.AsyncApiRouter, servers: [nats: nats_config()]}
+          ]
+
+          defp nats_config do
+            case Application.get_env(:helpdesk, :nats) do
+              nil -> :disabled
+              config -> [transport_opts: [connection_settings: [Map.new(config)]]]
+            end
+          end
+
+      The AsyncAPI document always reflects the compile-time declaration; `:servers`
+      affects only what runs. A server that is disabled — or whose router omits it via
+      `start_transports?: false` — publishes nothing, silently, while in-cluster
+      delivery over `AshAsyncApi.PubSub` keeps working.
 
   ## Loops
 
@@ -69,7 +90,8 @@ defmodule AshAsyncApi.Router do
         group: Keyword.get(opts, :group, []),
         auto_subscribe?: Keyword.get(opts, :auto_subscribe?, true),
         ignore_own_messages?: Keyword.get(opts, :ignore_own_messages?, true),
-        start_transports?: Keyword.get(opts, :start_transports?, true)
+        start_transports?: Keyword.get(opts, :start_transports?, true),
+        servers: Keyword.get(opts, :servers, [])
       }
 
       # Depend on each domain so that changing one recompiles the router, and with it

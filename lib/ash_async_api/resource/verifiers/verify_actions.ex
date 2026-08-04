@@ -20,6 +20,11 @@ defmodule AshAsyncApi.Resource.Verifiers.VerifyActions do
     end)
   end
 
+  # A `publish_all` names an action *type*, constrained by its schema — there is no
+  # single action to check, and matching no actions at all is legal (a resource with no
+  # destroy actions simply never publishes a destroy).
+  defp verify_operation(_dsl, %{all?: true}), do: :ok
+
   defp verify_operation(dsl, operation) do
     case Ash.Resource.Info.action(dsl, operation.action) do
       nil ->

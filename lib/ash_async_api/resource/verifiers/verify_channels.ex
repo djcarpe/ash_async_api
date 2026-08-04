@@ -78,6 +78,13 @@ defmodule AshAsyncApi.Resource.Verifiers.VerifyChannels do
 
   defp verify_segment(_dsl, _channel, literal) when is_binary(literal), do: :ok
 
+  # The special segments describe the declaration site rather than a record field:
+  # every resource has a type and a primary key, and `:_event` is filled by the
+  # operation. Nothing to check until the routing table resolves them.
+  defp verify_segment(_dsl, _channel, special)
+       when special in [:_domain, :_resource, :_event, :_pkey],
+       do: :ok
+
   defp verify_segment(dsl, channel, field) when is_atom(field) and not is_nil(field) do
     verify_path(dsl, channel, [field])
   end

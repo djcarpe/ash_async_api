@@ -149,6 +149,7 @@ defmodule AshAsyncApi.Domain do
   # entities get `:resource` prepended to their positional args.
   @domain_operation_entities [
                                AshAsyncApi.Operation.publish_entity(),
+                               AshAsyncApi.Operation.publish_all_entity(),
                                AshAsyncApi.Operation.subscribe_entity()
                              ]
                              |> Enum.map(fn entity ->
@@ -213,6 +214,24 @@ defmodule AshAsyncApi.Domain do
         doc: """
         A URI identifying the application, e.g `urn:com:example:helpdesk`. Rendered
         as the AsyncAPI document's `id`.
+        """
+      ],
+      type: [
+        type: :string,
+        doc: """
+        The name the `:_domain` address segment resolves to for this domain's
+        channels. Defaults to the domain's short module name in snake case.
+        """
+      ],
+      segment_naming: [
+        type: {:or, [{:in, [:snake, :camel]}, {:fun, 1}]},
+        default: :snake,
+        doc: """
+        How the `:_domain` and `:_resource` address segments render for channels in
+        this domain. `:snake` (the default) snake-cases the domain/resource `type`;
+        `:camel` lower-camelizes it (`work_element` becomes `workElement`); a
+        one-argument function receives the domain or resource module and returns the
+        segment string, taking full control.
         """
       ],
       default_content_type: [

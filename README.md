@@ -128,6 +128,62 @@ channel :comment_events,
 it is already on the record, and loading only when it is not. Paths are checked at compile
 time, so a misspelled relationship fails the build rather than the publish.
 
+## Every resource, every action: the CRUD event firehose
+
+Services that publish a lifecycle event for *every* record change do not want to spell out
+channels and operations per resource. Four **special segments** describe the declaration
+site instead of a record field, and `publish_all` covers every action of a type — so one
+`Spark.Dsl.Fragment` gives every resource its own fully described channel:
+
+```elixir
+defmodule MyApp.Events do
+  use Spark.Dsl.Fragment, of: Ash.Resource, extensions: [AshAsyncApi.Resource]
+
+  async_api do
+    channels do
+      channel :events, [:_domain, :_resource, :_event, :_pkey]
+    end
+
+    operations do
+      publish_all :create, :events
+      publish_all :update, :events
+      publish_all :destroy, :events
+    end
+  end
+end
+```
+
+Applied to `Crm.Lead`, that channel resolves to `crm.lead.{event}.{id}` (on NATS), and a
+custom `create :import` action publishes to `crm.lead.created.9f2c...` — `publish_all`
+matches actions by *type*, so custom-named actions are covered, and each expands into its
+own operation in the generated document, payload schema included. An action that also has
+an explicit `publish` on the same channel keeps it; `event_name "qualified"` overrides the
+verb for actions whose past tense cannot be inferred. Composite primary keys join into one
+`{pkey}` token, `a-b`.
+
+## Runtime server configuration
+
+The `server` declaration is the *description* — the document should show the real broker.
+Which broker a node actually connects to is runtime configuration, passed through the
+supervision tree:
+
+```elixir
+children = [
+  {MyApp.AsyncApiRouter, servers: [nats: nats_config()]}
+]
+
+defp nats_config do
+  case Application.get_env(:my_app, :nats) do
+    nil -> :disabled
+    config -> [transport_opts: [connection_settings: [Map.new(config)]]]
+  end
+end
+```
+
+A `:disabled` server starts no transport and its publishes are dropped silently — dev and
+test run with no broker and no error noise — while `AshAsyncApi.PubSub` keeps delivering
+in-cluster. A keyword list merges over the compile-time `transport_opts`.
+
 ## How the pieces fit
 
 ```

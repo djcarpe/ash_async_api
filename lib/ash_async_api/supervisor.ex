@@ -24,7 +24,11 @@ defmodule AshAsyncApi.Supervisor do
   Start a router's supervision tree.
 
   `overrides` are merged over the router's compile-time options, which is how a test
-  can start a router with `start_transports?: false`.
+  can start a router with `start_transports?: false`, and how an application supplies
+  runtime server configuration:
+
+      {MyApp.AsyncApiRouter, servers: [nats: [transport_opts: [...]]]}
+      {MyApp.AsyncApiRouter, servers: [nats: :disabled]}
   """
   @spec start_link(module(), keyword()) :: Supervisor.on_start()
   def start_link(router, overrides \\ []) do
@@ -39,6 +43,8 @@ defmodule AshAsyncApi.Supervisor do
 
     children =
       [AshAsyncApi.PubSub.child_spec({router, config.group})] ++ transports(router, config)
+
+    record_active_servers(router, config)
 
     Supervisor.init(children, strategy: :one_for_one)
   end
@@ -65,17 +71,76 @@ defmodule AshAsyncApi.Supervisor do
     |> Map.values()
     |> Enum.filter(fn {_domain, server} -> server.transport end)
     |> Enum.flat_map(fn {domain, server} ->
-      context =
-        Context.new(router, domain, server,
-          auto_subscribe?: config.auto_subscribe?,
-          filters: subscription_filters(table, server)
-        )
-
-      case server.transport.child_spec(context) do
-        nil -> []
-        child -> [child]
-      end
+      transport_child(router, table, config, domain, server)
     end)
+  end
+
+  defp transport_child(router, table, config, domain, server) do
+    case server_config(config, server.name) do
+      :disabled ->
+        []
+
+      runtime_opts ->
+        server = apply_runtime_opts(server, runtime_opts)
+
+        context =
+          Context.new(router, domain, server,
+            auto_subscribe?: config.auto_subscribe?,
+            filters: subscription_filters(table, server)
+          )
+
+        case server.transport.child_spec(context) do
+          nil -> []
+          child -> [child]
+        end
+    end
+  end
+
+  defp server_config(config, server_name) do
+    config |> Map.get(:servers, []) |> Keyword.get(server_name, [])
+  end
+
+  defp apply_runtime_opts(server, []), do: server
+
+  defp apply_runtime_opts(server, runtime_opts) do
+    %{
+      server
+      | transport_opts:
+          Keyword.merge(server.transport_opts, Keyword.get(runtime_opts, :transport_opts, []))
+    }
+  end
+
+  # Which servers this router actually started, for `AshAsyncApi.Publisher` to consult:
+  # a publish to a server that was deliberately not started is a silent no-op, not an
+  # error. Kept in `:persistent_term` because it changes only when the supervisor
+  # (re)initializes, and the publisher reads it on every message.
+  defp record_active_servers(router, config) do
+    active =
+      case config do
+        %{start_transports?: false} ->
+          MapSet.new()
+
+        _config ->
+          router.__ash_async_api__().servers
+          |> Map.values()
+          |> Enum.filter(fn {_domain, server} ->
+            server.transport && server_config(config, server.name) != :disabled
+          end)
+          |> MapSet.new(fn {_domain, server} -> server.name end)
+      end
+
+    :persistent_term.put({AshAsyncApi, :active_servers, router}, active)
+  end
+
+  @doc """
+  The names of the servers a router's supervisor actually started transports for.
+
+  `nil` when the router's supervisor has never run — a table can be built and a spec
+  generated without one, and in that case the publisher assumes every server is live.
+  """
+  @spec active_servers(module()) :: MapSet.t() | nil
+  def active_servers(router) do
+    :persistent_term.get({AshAsyncApi, :active_servers, router}, nil)
   end
 
   @doc """

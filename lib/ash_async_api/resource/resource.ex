@@ -56,8 +56,8 @@ defmodule AshAsyncApi.Resource do
     describe: """
     The operations that bind this resource's actions to channels.
 
-    `publish` sends a message when an action runs; `subscribe` runs an action when
-    a message arrives.
+    `publish` sends a message when an action runs (`publish_all` for every action of a
+    type); `subscribe` runs an action when a message arrives.
     """,
     examples: [
       """
@@ -66,12 +66,15 @@ defmodule AshAsyncApi.Resource do
           message_name "ticketOpened"
         end
 
+        publish_all :update, :ticket_events
+
         subscribe :assign, :ticket_commands
       end
       """
     ],
     entities: [
       AshAsyncApi.Operation.publish_entity(),
+      AshAsyncApi.Operation.publish_all_entity(),
       AshAsyncApi.Operation.subscribe_entity()
     ]
   }
