@@ -11,10 +11,11 @@ defmodule AshAsyncApi.Resource.Info do
 
   @doc """
   This resource's override for how the `:_domain` and `:_resource` address segments
-  render, or `nil` to inherit the domain's `segment_naming`.
+  render, or `nil` to inherit the domain's `segment_naming` (then application
+  config, then `:snake`).
   """
   @spec segment_naming(Spark.Dsl.t() | Ash.Resource.t()) ::
-          :snake | :camel | (module() -> String.t()) | nil
+          :snake | :camel | :pascal | (module() -> String.t()) | mfa() | nil
   def segment_naming(resource) do
     Extension.get_opt(resource, [:async_api], :segment_naming, nil, true)
   end

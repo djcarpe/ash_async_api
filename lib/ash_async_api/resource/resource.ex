@@ -107,13 +107,15 @@ defmodule AshAsyncApi.Resource do
         """
       ],
       segment_naming: [
-        type: {:or, [{:in, [:snake, :camel]}, {:fun, 1}]},
+        type: {:or, [{:in, [:snake, :camel, :pascal]}, {:mfa_or_fun, 1}]},
         doc: """
         How the `:_domain` and `:_resource` address segments render for this
-        resource's channels, overriding the domain's `segment_naming`. `:snake`
-        snake-cases the type, `:camel` lower-camelizes it, and a one-argument
-        function receives the domain or resource module and returns the segment
-        string. When unset, the domain's setting applies.
+        resource's channels, overriding the domain's `segment_naming` and any
+        application config. `:snake` snake-cases the type, `:camel` lower-camelizes
+        it, `:pascal` upper-camelizes it, and a one-argument function or
+        `{module, function, args}` receives the domain or resource module and
+        returns the segment string. When unset, the domain's setting (or the
+        `:ash_async_api_segment_naming` application config, then `:snake`) applies.
         """
       ],
       default_content_type: [
