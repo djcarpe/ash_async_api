@@ -197,12 +197,12 @@ defmodule AshAsyncApi.Router.Table do
   defp resolve_special_segments(channel, _scope), do: channel
 
   defp resolve_special_segment(:_domain, _channel, scope) do
-    segment_name(scope.domain, AshAsyncApi.Domain.Info.type(scope.domain), scope.domain)
+    segment_name(scope.domain, AshAsyncApi.Domain.Info.type(scope.domain), scope)
   end
 
   defp resolve_special_segment(:_resource, channel, scope) do
     resource = resource_for_special!(:_resource, channel, scope)
-    segment_name(resource, resource_type(resource), scope.domain)
+    segment_name(resource, resource_type(resource), scope)
   end
 
   defp resolve_special_segment(:_pkey, channel, scope) do
@@ -236,12 +236,18 @@ defmodule AshAsyncApi.Router.Table do
     AshAsyncApi.Resource.Info.type(resource) || Macro.underscore(short_name(resource))
   end
 
-  # The domain's `segment_naming` decides how a module's type becomes an address
-  # segment. `:snake` and `:camel` re-case the type — idempotent for the defaults,
-  # normalizing for hand-written ones — and a function gets the module itself, so it
-  # can ignore the type entirely.
-  defp segment_name(module, type, domain) do
-    case AshAsyncApi.Domain.Info.segment_naming(domain) do
+  # `segment_naming` decides how a module's type becomes an address segment. The
+  # declaring scope's policy governs the whole address — a resource-level setting
+  # overrides the domain's for that resource's channels, `:_domain` segment included.
+  # `:snake` and `:camel` re-case the type — idempotent for the defaults, normalizing
+  # for hand-written ones — and a function gets the module itself, so it can ignore
+  # the type entirely.
+  defp segment_name(module, type, scope) do
+    naming =
+      (scope.resource && AshAsyncApi.Resource.Info.segment_naming(scope.resource)) ||
+        AshAsyncApi.Domain.Info.segment_naming(scope.domain)
+
+    case naming do
       :snake -> Macro.underscore(type)
       :camel -> lower_camelize(type)
       fun when is_function(fun, 1) -> fun.(module) |> to_string()

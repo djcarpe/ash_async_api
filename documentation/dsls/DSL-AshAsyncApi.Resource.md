@@ -70,6 +70,7 @@ end
 | Name | Type | Default | Docs |
 |------|------|---------|------|
 | [`type`](#async_api-type){: #async_api-type } | `String.t` |  | The AsyncAPI type name for this resource. Used to name generated messages and component schemas, and to derive default operation ids. Defaults to the resource's short module name in snake case. |
+| [`segment_naming`](#async_api-segment_naming){: #async_api-segment_naming } | `:snake \| :camel \| (any -> any)` |  | How the `:_domain` and `:_resource` address segments render for this resource's channels, overriding the domain's `segment_naming`. `:snake` snake-cases the type, `:camel` lower-camelizes it, and a one-argument function receives the domain or resource module and returns the segment string. When unset, the domain's setting applies. |
 | [`default_content_type`](#async_api-default_content_type){: #async_api-default_content_type } | `String.t` |  | The content type for this resource's messages. Defaults to the domain's `default_content_type`. |
 | [`include_nil_values?`](#async_api-include_nil_values?){: #async_api-include_nil_values? } | `boolean` | `false` | Whether `nil` payload fields are included in published messages. |
 | [`hide_fields`](#async_api-hide_fields){: #async_api-hide_fields } | `list(atom)` | `[]` | Fields to omit from every generated payload schema and published message. Applied on top of any `payload_fields` on an operation, so a hidden field stays hidden. |
