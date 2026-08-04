@@ -55,9 +55,11 @@ Initial release.
   the generated document. Composite primary keys join into a single `{pkey}` token.
   The domain's segment name is configurable with the new domain-level `type` option,
   and the `segment_naming` option controls how both the `:_domain` and
-  `:_resource` segments render — `:snake` (default), `:camel`, or a one-argument
-  function of the module for full control. Set it on the domain for a domain-wide
-  policy, or on a resource to override for that resource's channels.
+  `:_resource` segments render — `:snake` (default), `:camel`, `:pascal`, or a
+  one-argument function/MFA of the module for full control. Resolution order:
+  resource-level, then domain-level, then
+  `config :my_app, :ash_async_api_segment_naming, ...` on the domain's `otp_app`,
+  then `:snake`.
 - Runtime server configuration — `{MyRouter, servers: [nats: [transport_opts: ...]]}`
   merges options over the compile-time declaration at startup, and
   `servers: [nats: :disabled]` skips that transport entirely: its publishes are dropped

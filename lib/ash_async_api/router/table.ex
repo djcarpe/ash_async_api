@@ -238,20 +238,34 @@ defmodule AshAsyncApi.Router.Table do
 
   # `segment_naming` decides how a module's type becomes an address segment. The
   # declaring scope's policy governs the whole address — a resource-level setting
-  # overrides the domain's for that resource's channels, `:_domain` segment included.
-  # `:snake` and `:camel` re-case the type — idempotent for the defaults, normalizing
-  # for hand-written ones — and a function gets the module itself, so it can ignore
-  # the type entirely.
+  # overrides the domain's for that resource's channels, `:_domain` segment included —
+  # and application config on the domain's otp_app fills in when the DSL says nothing.
+  # The casings re-case the type — idempotent for the defaults, normalizing for
+  # hand-written ones — and a function or MFA gets the module itself, so it can
+  # ignore the type entirely.
   defp segment_name(module, type, scope) do
     naming =
       (scope.resource && AshAsyncApi.Resource.Info.segment_naming(scope.resource)) ||
-        AshAsyncApi.Domain.Info.segment_naming(scope.domain)
+        AshAsyncApi.Domain.Info.segment_naming(scope.domain) ||
+        configured_segment_naming(scope.domain) ||
+        :snake
 
     case naming do
       :snake -> Macro.underscore(type)
       :camel -> lower_camelize(type)
+      :pascal -> Macro.camelize(type)
+      {mod, fun, args} -> apply(mod, fun, [module | args]) |> to_string()
       fun when is_function(fun, 1) -> fun.(module) |> to_string()
     end
+  end
+
+  # Read when the routing table is built (once, then cached in `:persistent_term`) —
+  # a config change after boot needs `AshAsyncApi.Router.clear_table/1` to take.
+  defp configured_segment_naming(domain) do
+    otp_app =
+      Spark.Dsl.Extension.get_persisted(domain, :otp_app) || Application.get_application(domain)
+
+    otp_app && Application.get_env(otp_app, :ash_async_api_segment_naming)
   end
 
   defp lower_camelize(name) do

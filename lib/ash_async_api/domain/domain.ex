@@ -224,14 +224,19 @@ defmodule AshAsyncApi.Domain do
         """
       ],
       segment_naming: [
-        type: {:or, [{:in, [:snake, :camel]}, {:fun, 1}]},
-        default: :snake,
+        type: {:or, [{:in, [:snake, :camel, :pascal]}, {:mfa_or_fun, 1}]},
         doc: """
         How the `:_domain` and `:_resource` address segments render for channels in
-        this domain. `:snake` (the default) snake-cases the domain/resource `type`;
-        `:camel` lower-camelizes it (`work_element` becomes `workElement`); a
-        one-argument function receives the domain or resource module and returns the
-        segment string, taking full control.
+        this domain. `:snake` snake-cases the domain/resource `type`, `:camel`
+        lower-camelizes it (`work_element` becomes `workElement`), `:pascal`
+        upper-camelizes it (`WorkElement`), and a one-argument function or
+        `{module, function, args}` receives the domain or resource module and
+        returns the segment string, taking full control.
+
+        When unset, application config decides —
+        `config :my_app, :ash_async_api_segment_naming, :camel` on the domain's
+        `otp_app` — and `:snake` is the final default. A resource-level
+        `segment_naming` overrides all of this for that resource's channels.
         """
       ],
       default_content_type: [

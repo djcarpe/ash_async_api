@@ -37,13 +37,14 @@ defmodule AshAsyncApi.Domain.Info do
 
   @doc """
   How the `:_domain` and `:_resource` address segments render for this domain's
-  channels: `:snake` (the default), `:camel`, or a one-argument function of the
-  domain or resource module.
+  channels: `:snake`, `:camel`, `:pascal`, a one-argument function (or MFA) of the
+  domain or resource module — or `nil` when unset, in which case application config
+  and then `:snake` apply.
   """
   @spec segment_naming(Spark.Dsl.t() | Ash.Domain.t()) ::
-          :snake | :camel | (module() -> String.t())
+          :snake | :camel | :pascal | (module() -> String.t()) | mfa() | nil
   def segment_naming(domain) do
-    Extension.get_opt(domain, [:async_api], :segment_naming, :snake, true)
+    Extension.get_opt(domain, [:async_api], :segment_naming, nil, true)
   end
 
   @doc "The server used by channels that name none."

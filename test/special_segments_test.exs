@@ -206,6 +206,168 @@ defmodule AshAsyncApi.SpecialSegmentsTest do
              ]
     end
 
+    test "segment_naming :pascal upper-camelizes the segments" do
+      defmodule PascalWorkItem do
+        use Ash.Resource,
+          domain: nil,
+          validate_domain_inclusion?: false,
+          data_layer: Ash.DataLayer.Ets,
+          extensions: [AshAsyncApi.Resource]
+
+        ets do
+          private? true
+        end
+
+        async_api do
+          channels do
+            channel :events, [:_domain, :_resource, :_event, :_pkey]
+          end
+
+          operations do
+            publish_all :create, :events
+          end
+        end
+
+        attributes do
+          uuid_primary_key :id
+        end
+
+        actions do
+          defaults [:read, create: :*]
+        end
+      end
+
+      defmodule PascalFrontDesk do
+        use Ash.Domain, extensions: [AshAsyncApi.Domain], validate_config_inclusion?: false
+
+        async_api do
+          segment_naming :pascal
+        end
+
+        resources do
+          resource PascalWorkItem
+        end
+      end
+
+      table = Table.build(:pascal_router, [PascalFrontDesk])
+
+      assert [channel] = table.channels
+      assert channel.address == "PascalFrontDesk/PascalWorkItem/{event}/{id}"
+    end
+
+    test "application config supplies the naming when the DSL does not" do
+      defmodule ConfiguredGadget do
+        use Ash.Resource,
+          domain: nil,
+          validate_domain_inclusion?: false,
+          data_layer: Ash.DataLayer.Ets,
+          extensions: [AshAsyncApi.Resource]
+
+        ets do
+          private? true
+        end
+
+        async_api do
+          channels do
+            channel :events, [:_domain, :_resource, :_event, :_pkey]
+          end
+
+          operations do
+            publish_all :create, :events
+          end
+        end
+
+        attributes do
+          uuid_primary_key :id
+        end
+
+        actions do
+          defaults [:read, create: :*]
+        end
+      end
+
+      # No segment_naming in the DSL; the otp_app's config decides.
+      defmodule ConfiguredWorkshop do
+        use Ash.Domain,
+          otp_app: :segment_naming_config_test,
+          extensions: [AshAsyncApi.Domain],
+          validate_config_inclusion?: false
+
+        resources do
+          resource ConfiguredGadget
+        end
+      end
+
+      Application.put_env(:segment_naming_config_test, :ash_async_api_segment_naming, :pascal)
+
+      on_exit(fn ->
+        Application.delete_env(:segment_naming_config_test, :ash_async_api_segment_naming)
+      end)
+
+      table = Table.build(:configured_router, [ConfiguredWorkshop])
+
+      assert [channel] = table.channels
+      assert channel.address == "ConfiguredWorkshop/ConfiguredGadget/{event}/{id}"
+    end
+
+    test "DSL-level segment_naming beats application config" do
+      defmodule LoudGadget do
+        use Ash.Resource,
+          domain: nil,
+          validate_domain_inclusion?: false,
+          data_layer: Ash.DataLayer.Ets,
+          extensions: [AshAsyncApi.Resource]
+
+        ets do
+          private? true
+        end
+
+        async_api do
+          channels do
+            channel :events, [:_domain, :_resource, :_event, :_pkey]
+          end
+
+          operations do
+            publish_all :create, :events
+          end
+        end
+
+        attributes do
+          uuid_primary_key :id
+        end
+
+        actions do
+          defaults [:read, create: :*]
+        end
+      end
+
+      defmodule LoudWorkshop do
+        use Ash.Domain,
+          otp_app: :segment_naming_precedence_test,
+          extensions: [AshAsyncApi.Domain],
+          validate_config_inclusion?: false
+
+        async_api do
+          segment_naming :camel
+        end
+
+        resources do
+          resource LoudGadget
+        end
+      end
+
+      Application.put_env(:segment_naming_precedence_test, :ash_async_api_segment_naming, :pascal)
+
+      on_exit(fn ->
+        Application.delete_env(:segment_naming_precedence_test, :ash_async_api_segment_naming)
+      end)
+
+      table = Table.build(:loud_router, [LoudWorkshop])
+
+      assert [channel] = table.channels
+      assert channel.address == "loudWorkshop/loudGadget/{event}/{id}"
+    end
+
     test "segment_naming as a function takes full control of both segments" do
       defmodule FunOrder do
         use Ash.Resource,
