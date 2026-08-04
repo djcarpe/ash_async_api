@@ -123,6 +123,89 @@ defmodule AshAsyncApi.SpecialSegmentsTest do
       assert channel.address == "camelServiceDesk/camelWorkOrder/{event}/{id}"
     end
 
+    test "a resource-level segment_naming overrides the domain's for its channels" do
+      defmodule PlainReceipt do
+        use Ash.Resource,
+          domain: nil,
+          validate_domain_inclusion?: false,
+          data_layer: Ash.DataLayer.Ets,
+          extensions: [AshAsyncApi.Resource]
+
+        ets do
+          private? true
+        end
+
+        async_api do
+          channels do
+            channel :events, [:_domain, :_resource, :_event, :_pkey]
+          end
+
+          operations do
+            publish_all :create, :events
+          end
+        end
+
+        attributes do
+          uuid_primary_key :id
+        end
+
+        actions do
+          defaults [:read, create: :*]
+        end
+      end
+
+      defmodule CamelSalesOrder do
+        use Ash.Resource,
+          domain: nil,
+          validate_domain_inclusion?: false,
+          data_layer: Ash.DataLayer.Ets,
+          extensions: [AshAsyncApi.Resource]
+
+        ets do
+          private? true
+        end
+
+        async_api do
+          segment_naming :camel
+
+          channels do
+            channel :events, [:_domain, :_resource, :_event, :_pkey]
+          end
+
+          operations do
+            publish_all :create, :events
+          end
+        end
+
+        attributes do
+          uuid_primary_key :id
+        end
+
+        actions do
+          defaults [:read, create: :*]
+        end
+      end
+
+      defmodule MixedBackOffice do
+        use Ash.Domain, extensions: [AshAsyncApi.Domain], validate_config_inclusion?: false
+
+        resources do
+          resource PlainReceipt
+          resource CamelSalesOrder
+        end
+      end
+
+      table = Table.build(:mixed_router, [MixedBackOffice])
+      addresses = table.channels |> Enum.map(& &1.address) |> Enum.sort()
+
+      # The overriding resource camelizes its whole address — domain segment
+      # included — while its sibling keeps the domain's default snake.
+      assert addresses == [
+               "mixedBackOffice/camelSalesOrder/{event}/{id}",
+               "mixed_back_office/plain_receipt/{event}/{id}"
+             ]
+    end
+
     test "segment_naming as a function takes full control of both segments" do
       defmodule FunOrder do
         use Ash.Resource,

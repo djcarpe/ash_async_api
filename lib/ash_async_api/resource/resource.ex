@@ -106,6 +106,16 @@ defmodule AshAsyncApi.Resource do
         the resource's short module name in snake case.
         """
       ],
+      segment_naming: [
+        type: {:or, [{:in, [:snake, :camel]}, {:fun, 1}]},
+        doc: """
+        How the `:_domain` and `:_resource` address segments render for this
+        resource's channels, overriding the domain's `segment_naming`. `:snake`
+        snake-cases the type, `:camel` lower-camelizes it, and a one-argument
+        function receives the domain or resource module and returns the segment
+        string. When unset, the domain's setting applies.
+        """
+      ],
       default_content_type: [
         type: :string,
         doc: """

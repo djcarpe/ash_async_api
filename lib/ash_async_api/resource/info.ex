@@ -9,6 +9,16 @@ defmodule AshAsyncApi.Resource.Info do
     Extension.get_opt(resource, [:async_api], :type, nil, true)
   end
 
+  @doc """
+  This resource's override for how the `:_domain` and `:_resource` address segments
+  render, or `nil` to inherit the domain's `segment_naming`.
+  """
+  @spec segment_naming(Spark.Dsl.t() | Ash.Resource.t()) ::
+          :snake | :camel | (module() -> String.t()) | nil
+  def segment_naming(resource) do
+    Extension.get_opt(resource, [:async_api], :segment_naming, nil, true)
+  end
+
   @doc "The default content type for the resource's messages."
   @spec default_content_type(Spark.Dsl.t() | Ash.Resource.t()) :: String.t() | nil
   def default_content_type(resource) do

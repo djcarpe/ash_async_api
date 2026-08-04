@@ -54,9 +54,10 @@ Initial release.
   channel per resource (`crm.lead.{event}.{id}`), each with its own payload schemas in
   the generated document. Composite primary keys join into a single `{pkey}` token.
   The domain's segment name is configurable with the new domain-level `type` option,
-  and the domain-level `segment_naming` option controls how both the `:_domain` and
+  and the `segment_naming` option controls how both the `:_domain` and
   `:_resource` segments render — `:snake` (default), `:camel`, or a one-argument
-  function of the module for full control.
+  function of the module for full control. Set it on the domain for a domain-wide
+  policy, or on a resource to override for that resource's channels.
 - Runtime server configuration — `{MyRouter, servers: [nats: [transport_opts: ...]]}`
   merges options over the compile-time declaration at startup, and
   `servers: [nats: :disabled]` skips that transport entirely: its publishes are dropped
